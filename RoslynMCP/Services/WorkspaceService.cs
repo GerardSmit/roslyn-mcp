@@ -21,10 +21,10 @@ internal static class WorkspaceService
     private static readonly Timer s_evictionTimer;
 
     /// <summary>
-    /// Indicates whether a Visual Studio or Build Tools MSBuild instance was registered.
-    /// When <c>true</c>, legacy-format .csproj files (non-SDK-style) are supported.
+    /// Indicates whether legacy .NET Framework projects (non-SDK-style .csproj) are supported.
+    /// True when MSBuild is registered and .NET Framework targeting packs are available.
     /// </summary>
-    public static bool IsVisualStudioMSBuildRegistered { get; private set; }
+    public static bool IsLegacyProjectSupported { get; private set; }
 
     private static Dictionary<string, string> CreateDefaultProperties() => new()
     {
@@ -63,9 +63,17 @@ internal static class WorkspaceService
                 return;
 
             MSBuildLocator.RegisterInstance(instance);
-            IsVisualStudioMSBuildRegistered = true;
+
+            // Legacy .NET Framework projects require targeting packs (Windows only)
+            var refAssembliesPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+                "Reference Assemblies", "Microsoft", "Framework", ".NETFramework");
+
+            IsLegacyProjectSupported = Directory.Exists(refAssembliesPath);
+
             Console.Error.WriteLine(
-                $"[WorkspaceService] Registered MSBuild from '{instance.Name}' v{instance.Version} at '{instance.MSBuildPath}'.");
+                $"[WorkspaceService] Registered MSBuild from '{instance.Name}' v{instance.Version} at '{instance.MSBuildPath}'."
+                + (IsLegacyProjectSupported ? " Legacy .NET Framework projects supported." : ""));
         }
         catch (Exception ex)
         {
@@ -225,6 +233,74 @@ internal static class WorkspaceService
     {
         return project.Documents
             .FirstOrDefault(d => string.Equals(d.FilePath, filePath, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Finds .csproj files that contain a <c>&lt;ProjectReference&gt;</c> to
+    /// <paramref name="referencedProjectPath"/>. Scans the ancestor directories of
+    /// the referenced project up to the repository root (detected by <c>.git</c> folder)
+    /// or at most 5 levels up.
+    /// </summary>
+    public static List<string> FindReferencingProjects(string referencedProjectPath)
+    {
+        var normalizedTarget = Path.GetFullPath(referencedProjectPath);
+        var targetFileName = Path.GetFileName(normalizedTarget);
+        var results = new List<string>();
+
+        // Walk up to repo root or 5 levels
+        var searchRoot = new FileInfo(normalizedTarget).Directory;
+        for (int i = 0; i < 5 && searchRoot?.Parent != null; i++)
+        {
+            searchRoot = searchRoot.Parent;
+            if (Directory.Exists(Path.Combine(searchRoot.FullName, ".git")))
+                break;
+        }
+
+        if (searchRoot is null)
+            return results;
+
+        foreach (var csprojFile in searchRoot.EnumerateFiles("*.csproj", SearchOption.AllDirectories))
+        {
+            if (string.Equals(csprojFile.FullName, normalizedTarget, StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            try
+            {
+                var content = File.ReadAllText(csprojFile.FullName);
+                // Check if this project references the target by file name
+                if (content.Contains(targetFileName, StringComparison.OrdinalIgnoreCase) &&
+                    content.Contains("ProjectReference", StringComparison.Ordinal))
+                {
+                    // Verify by resolving the actual ProjectReference path
+                    var dir = csprojFile.DirectoryName!;
+                    foreach (var line in content.Split('\n'))
+                    {
+                        if (!line.Contains("ProjectReference", StringComparison.Ordinal))
+                            continue;
+
+                        var includeStart = line.IndexOf("Include=\"", StringComparison.Ordinal);
+                        if (includeStart < 0) continue;
+                        includeStart += 9;
+                        var includeEnd = line.IndexOf('"', includeStart);
+                        if (includeEnd < 0) continue;
+
+                        var refPath = line[includeStart..includeEnd].Replace('\\', Path.DirectorySeparatorChar);
+                        var resolvedPath = Path.GetFullPath(Path.Combine(dir, refPath));
+                        if (string.Equals(resolvedPath, normalizedTarget, StringComparison.OrdinalIgnoreCase))
+                        {
+                            results.Add(csprojFile.FullName);
+                            break;
+                        }
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore unreadable files
+            }
+        }
+
+        return results;
     }
 
     /// <summary>
