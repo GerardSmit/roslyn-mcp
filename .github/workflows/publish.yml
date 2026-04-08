@@ -1,0 +1,70 @@
+name: Publish
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  publish-nuget:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore RoslynMCP.sln
+
+      - name: Build
+        run: dotnet build RoslynMCP.sln --configuration Release --no-restore --nologo
+
+      - name: Test
+        run: dotnet test RoslynMCP.sln --configuration Release --no-build --nologo -p:UseAppHost=false
+
+      - name: Compute package version
+        id: version
+        shell: bash
+        run: |
+          version_prefix=$(grep -oPm1 '(?<=<VersionPrefix>)[^<]+' RoslynMCP/RoslynMCP.csproj)
+
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
+            package_version="${GITHUB_REF_NAME#v}"
+          elif [[ "${GITHUB_REF_NAME}" == "main" ]]; then
+            latest_tag=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || true)
+
+            if [[ -n "$latest_tag" ]]; then
+              base_version="${latest_tag#v}"
+              commit_count=$(git rev-list "${latest_tag}..HEAD" --count)
+            else
+              base_version="$version_prefix"
+              commit_count=$(git rev-list HEAD --count)
+            fi
+
+            IFS='.' read -r major minor patch <<< "$base_version"
+            package_version="$major.$minor.$((patch + commit_count))"
+          else
+            echo "This workflow only publishes from main or a version tag." >&2
+            exit 1
+          fi
+
+          echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
+          echo "Publishing roslyn-mcp version $package_version"
+
+      - name: Pack roslyn-mcp
+        run: dotnet pack RoslynMCP/RoslynMCP.csproj -c Release -o artifacts --no-build --nologo /p:ContinuousIntegrationBuild=true /p:Version=${{ steps.version.outputs.package_version }} /p:PackageVersion=${{ steps.version.outputs.package_version }}
+
+      - name: Publish to NuGet
+        run: dotnet nuget push "artifacts/roslyn-mcp.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ secrets.NUGET_API_KEY }}" --skip-duplicate
