@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
+using System.Xml.Linq;
 using ModelContextProtocol.Server;
 using RoslynMCP.Services;
 
@@ -33,12 +34,15 @@ public static class RunTestsTool
             if (csprojPath is null)
                 return $"Error: Could not find a .csproj file for '{projectPath}'.";
 
+            var trxPath = Path.Combine(Path.GetTempPath(), $"roslyn-mcp-{Guid.NewGuid():N}.trx");
+
             var args = new StringBuilder();
             args.Append("test ");
             args.Append('"');
             args.Append(csprojPath);
             args.Append('"');
             args.Append(" --verbosity normal");
+            args.Append($" --logger \"trx;LogFileName={trxPath}\"");
 
             if (!build)
                 args.Append(" --no-build");
@@ -87,25 +91,47 @@ public static class RunTestsTool
             {
                 using var timeoutCts = timeoutSeconds > 0
                     ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
-                    : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    : null;
 
-                if (timeoutSeconds > 0)
-                    timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+                timeoutCts?.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
 
-                await process.WaitForExitAsync(timeoutCts.Token);
+                await process.WaitForExitAsync(timeoutCts?.Token ?? cancellationToken);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 try { process.Kill(entireProcessTree: true); } catch { }
+                try { File.Delete(trxPath); } catch { }
                 return $"Test run timed out after {timeoutSeconds} seconds.";
             }
             catch (OperationCanceledException)
             {
                 try { process.Kill(entireProcessTree: true); } catch { }
+                try { File.Delete(trxPath); } catch { }
                 return "Test run was cancelled.";
             }
 
-            return FormatTestOutput(stdout.ToString(), stderr.ToString(), process.ExitCode);
+            string result;
+            if (File.Exists(trxPath))
+            {
+                try
+                {
+                    result = FormatTrxOutput(trxPath, process.ExitCode);
+                }
+                catch
+                {
+                    result = FormatTestOutput(stdout.ToString(), stderr.ToString(), process.ExitCode);
+                }
+                finally
+                {
+                    try { File.Delete(trxPath); } catch { }
+                }
+            }
+            else
+            {
+                result = FormatTestOutput(stdout.ToString(), stderr.ToString(), process.ExitCode);
+            }
+
+            return result;
         }
         catch (Exception ex)
         {
@@ -113,32 +139,8 @@ public static class RunTestsTool
         }
     }
 
-    internal static string? ResolveCsprojPath(string projectPath)
-    {
-        var normalized = PathHelper.NormalizePath(projectPath);
-
-        if (normalized.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) && File.Exists(normalized))
-            return normalized;
-
-        if (File.Exists(normalized))
-        {
-            var dir = Path.GetDirectoryName(normalized);
-            while (dir is not null)
-            {
-                var csprojs = Directory.GetFiles(dir, "*.csproj");
-                if (csprojs.Length >= 1) return csprojs[0];
-                dir = Path.GetDirectoryName(dir);
-            }
-        }
-
-        if (Directory.Exists(normalized))
-        {
-            var csprojs = Directory.GetFiles(normalized, "*.csproj");
-            if (csprojs.Length >= 1) return csprojs[0];
-        }
-
-        return null;
-    }
+    internal static string? ResolveCsprojPath(string projectPath) =>
+        PathHelper.ResolveCsprojPath(projectPath);
 
     internal static string FormatTestOutput(string stdout, string stderr, int exitCode)
     {
@@ -254,6 +256,68 @@ public static class RunTestsTool
                 sb.AppendLine("```");
                 sb.AppendLine(filtered.TrimEnd());
                 sb.AppendLine("```");
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    internal static string FormatTrxOutput(string trxPath, int exitCode)
+    {
+        var sb = new StringBuilder();
+        XNamespace ns = "http://microsoft.com/schemas/VisualStudio/TeamTest/2010";
+        var doc = XDocument.Load(trxPath);
+        var results = doc.Descendants(ns + "UnitTestResult").ToList();
+
+        int passed = results.Count(r => r.Attribute("outcome")?.Value == "Passed");
+        int failed = results.Count(r => r.Attribute("outcome")?.Value == "Failed");
+        int skipped = results.Count(r => r.Attribute("outcome")?.Value is "NotExecuted" or "Inconclusive");
+        int total = results.Count;
+
+        if (exitCode == 0)
+            sb.AppendLine("✅ **Tests Passed**");
+        else
+            sb.AppendLine("❌ **Tests Failed**");
+
+        sb.AppendLine();
+        sb.AppendLine($"Total tests: {total}");
+        sb.AppendLine($"     Passed: {passed}");
+        if (failed > 0) sb.AppendLine($"     Failed: {failed}");
+        if (skipped > 0) sb.AppendLine($"    Skipped: {skipped}");
+
+        // Show failed tests with details
+        var failedResults = results.Where(r => r.Attribute("outcome")?.Value == "Failed").ToList();
+        if (failedResults.Count > 0)
+        {
+            sb.AppendLine();
+            sb.AppendLine("**Failed Tests:**");
+            foreach (var result in failedResults)
+            {
+                var testName = result.Attribute("testName")?.Value ?? "Unknown";
+                var duration = result.Attribute("duration")?.Value;
+                var output = result.Element(ns + "Output");
+                var errorInfo = output?.Element(ns + "ErrorInfo");
+                var message = errorInfo?.Element(ns + "Message")?.Value;
+                var stackTrace = errorInfo?.Element(ns + "StackTrace")?.Value;
+
+                sb.AppendLine();
+                sb.AppendLine($"### {MarkdownHelper.EscapeTableCell(testName)}");
+                if (duration is not null) sb.AppendLine($"Duration: {duration}");
+                if (!string.IsNullOrWhiteSpace(message))
+                {
+                    sb.AppendLine("```");
+                    sb.AppendLine(message.Trim());
+                    sb.AppendLine("```");
+                }
+                if (!string.IsNullOrWhiteSpace(stackTrace))
+                {
+                    sb.AppendLine("<details><summary>Stack trace</summary>");
+                    sb.AppendLine();
+                    sb.AppendLine("```");
+                    sb.AppendLine(stackTrace.Trim());
+                    sb.AppendLine("```");
+                    sb.AppendLine("</details>");
+                }
             }
         }
 

@@ -102,31 +102,7 @@ public static class ValidateFileTool
                 writer.WriteLine("No syntax errors found.");
             }
 
-            // Semantic diagnostics
-            var semanticModel = await document.GetSemanticModelAsync(cancellationToken);
-            if (semanticModel == null)
-            {
-                writer.WriteLine("Error: Unable to obtain semantic model for document.");
-                return;
-            }
-
-            var semanticDiagnostics = semanticModel.GetDiagnostics();
-
-            if (semanticDiagnostics.Any())
-            {
-                writer.WriteLine("\nSemantic errors found:");
-                foreach (var diagnostic in semanticDiagnostics)
-                {
-                    var location = diagnostic.Location.GetLineSpan();
-                    writer.WriteLine($"Line {location.StartLinePosition.Line + 1}: {diagnostic.GetMessage()}");
-                }
-            }
-            else
-            {
-                writer.WriteLine("No semantic errors found.");
-            }
-
-            // Compilation diagnostics
+            // Compilation diagnostics (includes semantic diagnostics)
             var compilation = await project.GetCompilationAsync(cancellationToken);
             if (compilation == null)
             {

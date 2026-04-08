@@ -83,7 +83,7 @@ public static class GetCoverageTool
             {
                 // Show branch details for partially covered branches
                 var partialBranches = method.Lines
-                    .Where(l => l.IsBranch && l.ConditionCoverage is not null && !l.ConditionCoverage.StartsWith("100%"))
+                    .Where(l => l.IsBranch && l.ConditionCoverage is not null && !l.IsFullBranchCoverage)
                     .ToList();
                 if (partialBranches.Count > 0)
                 {
@@ -225,7 +225,7 @@ public static class GetCoverageTool
         {
             // Show partial branches first
             var partialBranches = fileCov.Lines.Values
-                .Where(l => l.IsBranch && l.ConditionCoverage is not null && !l.ConditionCoverage.StartsWith("100%"))
+                .Where(l => l.IsBranch && l.ConditionCoverage is not null && !l.IsFullBranchCoverage)
                 .OrderBy(l => l.LineNumber)
                 .ToList();
             if (partialBranches.Count > 0)

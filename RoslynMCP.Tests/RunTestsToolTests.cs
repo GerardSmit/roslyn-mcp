@@ -44,7 +44,7 @@ public class RunTestsToolTests
 
         var result = await RunTestsTool.RunTests(
             testProjectPath,
-            "FullyQualifiedName=RoslynMCP.Tests.RunTestsToolTests.WhenProjectIsNotTestProjectThenReturnsError");
+            "FullyQualifiedName=RoslynMCP.Tests.RunTestsToolTests.WhenProjectPathIsEmptyThenReturnsError");
 
         Assert.Contains("Passed", result);
     }
@@ -185,5 +185,77 @@ public class RunTestsToolTests
         Assert.Contains("Tests Failed", result);
         Assert.Contains("error CS1002", result);
         Assert.Contains("; expected", result);
+    }
+
+    [Fact]
+    public void WhenFormattingTrxWithPassedTestsThenShowsSummary()
+    {
+        var trxContent = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+              <Results>
+                <UnitTestResult testName="MyTest1" outcome="Passed" duration="00:00:00.123" />
+                <UnitTestResult testName="MyTest2" outcome="Passed" duration="00:00:00.045" />
+              </Results>
+            </TestRun>
+            """;
+
+        var trxPath = Path.Combine(Path.GetTempPath(), $"test-{Guid.NewGuid():N}.trx");
+        try
+        {
+            File.WriteAllText(trxPath, trxContent);
+            var result = RunTestsTool.FormatTrxOutput(trxPath, 0);
+
+            Assert.Contains("Tests Passed", result);
+            Assert.Contains("Total tests: 2", result);
+            Assert.Contains("Passed: 2", result);
+            Assert.DoesNotContain("Failed:", result);
+        }
+        finally
+        {
+            File.Delete(trxPath);
+        }
+    }
+
+    [Fact]
+    public void WhenFormattingTrxWithFailedTestsThenShowsDetails()
+    {
+        var trxContent = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <TestRun xmlns="http://microsoft.com/schemas/VisualStudio/TeamTest/2010">
+              <Results>
+                <UnitTestResult testName="PassingTest" outcome="Passed" duration="00:00:00.010" />
+                <UnitTestResult testName="FailingTest" outcome="Failed" duration="00:00:01.234">
+                  <Output>
+                    <ErrorInfo>
+                      <Message>Assert.Equal() Failure
+            Expected: 42
+            Actual:   0</Message>
+                      <StackTrace>   at MyTests.FailingTest() in C:\src\Tests.cs:line 15</StackTrace>
+                    </ErrorInfo>
+                  </Output>
+                </UnitTestResult>
+              </Results>
+            </TestRun>
+            """;
+
+        var trxPath = Path.Combine(Path.GetTempPath(), $"test-{Guid.NewGuid():N}.trx");
+        try
+        {
+            File.WriteAllText(trxPath, trxContent);
+            var result = RunTestsTool.FormatTrxOutput(trxPath, 1);
+
+            Assert.Contains("Tests Failed", result);
+            Assert.Contains("Total tests: 2", result);
+            Assert.Contains("Passed: 1", result);
+            Assert.Contains("Failed: 1", result);
+            Assert.Contains("FailingTest", result);
+            Assert.Contains("Assert.Equal() Failure", result);
+            Assert.Contains("Stack trace", result);
+        }
+        finally
+        {
+            File.Delete(trxPath);
+        }
     }
 }

@@ -358,7 +358,7 @@ public static class ProjectStructureTool
             TypeKind.Struct => "[S]",
             TypeKind.Delegate => "[D]",
             TypeKind.Class when type.IsAbstract => "[A]",
-            TypeKind.Class when type.IsStatic => "[S]",
+            TypeKind.Class when type.IsStatic => "[Sc]",
             TypeKind.Class when type.IsRecord => "[R]",
             _ => "[C]",
         };

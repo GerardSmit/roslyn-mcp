@@ -209,7 +209,7 @@ internal sealed partial class DebuggerService : IDisposable
                 if (!_breakpoints.Values.Any(bp =>
                     bp.FilePath.Equals(normalizedPath, StringComparison.OrdinalIgnoreCase) && bp.Line == line))
                 {
-                    await SetBreakpointAsync(file, line, cancellationToken);
+                    await SetBreakpointAsync(file, line, condition: null, cancellationToken);
                 }
             }
         }
@@ -303,20 +303,24 @@ internal sealed partial class DebuggerService : IDisposable
         return null;
     }
 
-    public async Task<string> SetBreakpointAsync(string filePath, int line, CancellationToken cancellationToken = default)
+    public async Task<string> SetBreakpointAsync(string filePath, int line, string? condition = null, CancellationToken cancellationToken = default)
     {
         if (_state == DebugState.NotStarted)
             return "Error: No active debug session.";
 
         var normalizedPath = PathHelper.NormalizePath(filePath);
         var escapedPath = EscapeMiString(normalizedPath);
-        var response = await SendCommandAsync($"-break-insert \"{escapedPath}:{line}\"", cancellationToken);
+        var conditionArg = !string.IsNullOrWhiteSpace(condition)
+            ? $" -c \"{EscapeMiString(condition)}\""
+            : "";
+        var response = await SendCommandAsync($"-break-insert{conditionArg} \"{escapedPath}:{line}\"", cancellationToken);
 
         var match = BreakpointInsertedRegex().Match(response);
         if (match.Success && int.TryParse(match.Groups[1].Value, out var bpNumber))
         {
             _breakpoints[bpNumber] = new BreakpointInfo(bpNumber, normalizedPath, line);
-            return $"Breakpoint #{bpNumber} set at {Path.GetFileName(normalizedPath)}:{line}";
+            var conditionNote = !string.IsNullOrWhiteSpace(condition) ? $" (condition: {condition})" : "";
+            return $"Breakpoint #{bpNumber} set at {Path.GetFileName(normalizedPath)}:{line}{conditionNote}";
         }
 
         if (response.Contains("^error", StringComparison.Ordinal))

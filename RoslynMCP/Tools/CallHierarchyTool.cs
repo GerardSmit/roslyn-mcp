@@ -181,7 +181,13 @@ public static class CallHierarchyTool
         var declNode = root.FindNode(location.SourceSpan);
 
         // Find all invocations within this method/property body
+        // Filter to syntax nodes that represent actual calls to avoid false positives
         var invocations = declNode.DescendantNodes()
+            .Where(n => n is Microsoft.CodeAnalysis.CSharp.Syntax.InvocationExpressionSyntax
+                      or Microsoft.CodeAnalysis.CSharp.Syntax.MemberAccessExpressionSyntax
+                      or Microsoft.CodeAnalysis.CSharp.Syntax.ObjectCreationExpressionSyntax
+                      or Microsoft.CodeAnalysis.CSharp.Syntax.ImplicitObjectCreationExpressionSyntax
+                      or Microsoft.CodeAnalysis.CSharp.Syntax.ElementAccessExpressionSyntax)
             .Select(n => semanticModel.GetSymbolInfo(n, cancellationToken))
             .Where(si => si.Symbol is not null)
             .Select(si => si.Symbol!)

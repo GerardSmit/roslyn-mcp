@@ -49,7 +49,7 @@ public class ValidateFileToolTests
             filePath: FixturePaths.CalculatorFile,
             runAnalyzers: false);
 
-        Assert.Contains("No semantic errors found", result);
+        Assert.Contains("compiles successfully", result);
     }
 
     [Fact]
@@ -80,7 +80,6 @@ public class ValidateFileToolTests
             filePath: FixturePaths.BrokenSemanticFile,
             runAnalyzers: false);
 
-        Assert.Contains("Semantic errors found", result);
         Assert.Contains("Compilation and analyzer diagnostics", result);
         Assert.Contains("CS", result);
     }
@@ -202,7 +201,6 @@ public class ValidateFileToolTests
 
         // Calculator.cs is validated within project context
         Assert.Contains("No syntax errors found", result);
-        Assert.Contains("No semantic errors found", result);
         Assert.Contains("compiles successfully", result);
     }
 
@@ -244,7 +242,8 @@ public class ValidateFileToolTests
             filePath: FixturePaths.BrokenSemanticFile,
             runAnalyzers: false);
 
-        Assert.Contains("Semantic errors found", result);
+        Assert.Contains("Compilation and analyzer diagnostics", result);
+        Assert.Contains("Error", result);
     }
 
     [Fact]

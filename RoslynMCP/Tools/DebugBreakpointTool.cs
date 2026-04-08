@@ -15,6 +15,8 @@ public static class DebugBreakpointTool
     public static async Task<string> DebugSetBreakpoint(
         [Description("Path to the source file.")] string filePath,
         [Description("Line number for the breakpoint.")] int line,
+        [Description("Optional condition expression. Breakpoint only triggers when expression is true (e.g. 'x > 5').")]
+        string? condition = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -23,7 +25,7 @@ public static class DebugBreakpointTool
             if (session is null)
                 return "Error: No active debug session. Use DebugStartTest or DebugAttach first.";
 
-            return await session.SetBreakpointAsync(filePath, line, cancellationToken);
+            return await session.SetBreakpointAsync(filePath, line, condition, cancellationToken);
         }
         catch (Exception ex)
         {

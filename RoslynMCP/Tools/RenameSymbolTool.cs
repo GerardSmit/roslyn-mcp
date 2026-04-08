@@ -92,7 +92,7 @@ public static class RenameSymbolTool
                     var oldText = await oldDoc.GetTextAsync(cancellationToken);
                     var newText = await newDoc.GetTextAsync(cancellationToken);
 
-                    if (oldText.ToString() != newText.ToString())
+                    if (!oldText.ContentEquals(newText))
                     {
                         changedDocs.Add(new ChangedFile(
                             oldDoc.FilePath ?? oldDoc.Name,

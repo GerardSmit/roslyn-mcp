@@ -3,6 +3,7 @@ using System.Text;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CodeActions;
 using Microsoft.CodeAnalysis.CodeFixes;
+using Microsoft.CodeAnalysis.CodeRefactorings;
 using Microsoft.CodeAnalysis.Text;
 using ModelContextProtocol.Server;
 using RoslynMCP.Services;
@@ -18,7 +19,8 @@ public static class CodeActionsTool
     [McpServerTool, Description(
         "List available code fixes for a diagnostic at a position in a C# file. " +
         "Provide a code snippet with [| |] delimiters around the code with the diagnostic. " +
-        "Returns available fixes. Use applyIndex to apply a specific fix.")]
+        "Returns available fixes. Use applyIndex to apply a specific fix. " +
+        "Also discovers refactorings (Extract Method, Introduce Variable, etc.) at the marked position.")]
     public static async Task<string> GetCodeActions(
         [Description("Path to the C# file.")] string filePath,
         [Description(
@@ -88,55 +90,84 @@ public static class CodeActionsTool
                 }
             }
 
-            if (diagnostics.Count == 0)
-                return "No diagnostics found at the marked position.";
+            // Find code fixes for diagnostics
+            var allActions = new List<(CodeAction Action, string Source)>();
 
-            // Find code fixes
-            var codeFixProviders = GetCodeFixProviders(fileCtx.Project);
-            var allActions = new List<(CodeAction Action, Diagnostic Diagnostic)>();
-
-            foreach (var diagnostic in diagnostics)
+            if (diagnostics.Count > 0)
             {
-                foreach (var provider in codeFixProviders)
+                var codeFixProviders = GetCodeFixProviders(fileCtx.Project);
+                foreach (var diagnostic in diagnostics)
                 {
-                    if (!provider.FixableDiagnosticIds.Contains(diagnostic.Id))
-                        continue;
-
-                    var actions = new List<CodeAction>();
-                    var context = new CodeFixContext(
-                        document,
-                        diagnostic,
-                        (action, _) => actions.Add(action),
-                        cancellationToken);
-
-                    try
+                    foreach (var provider in codeFixProviders)
                     {
-                        await provider.RegisterCodeFixesAsync(context);
-                    }
-                    catch
-                    {
-                        // Some providers may fail
-                    }
+                        if (!provider.FixableDiagnosticIds.Contains(diagnostic.Id))
+                            continue;
 
-                    foreach (var action in actions)
-                    {
-                        allActions.Add((action, diagnostic));
+                        var actions = new List<CodeAction>();
+                        var context = new CodeFixContext(
+                            document,
+                            diagnostic,
+                            (action, _) => actions.Add(action),
+                            cancellationToken);
+
+                        try
+                        {
+                            await provider.RegisterCodeFixesAsync(context);
+                        }
+                        catch (Exception ex)
+                        {
+                            Console.Error.WriteLine($"[CodeActions] Provider {provider.GetType().Name} failed: {ex.Message}");
+                        }
+
+                        foreach (var action in actions)
+                        {
+                            allActions.Add((action, $"fixes {diagnostic.Id}"));
+                        }
                     }
+                }
+            }
+
+            // Find refactoring actions (work on any code selection, no diagnostics needed)
+            var refactoringProviders = GetRefactoringProviders();
+            foreach (var provider in refactoringProviders)
+            {
+                var actions = new List<CodeAction>();
+                var context = new CodeRefactoringContext(
+                    document,
+                    markedSpan,
+                    action => actions.Add(action),
+                    cancellationToken);
+
+                try
+                {
+                    await provider.ComputeRefactoringsAsync(context);
+                }
+                catch (Exception ex)
+                {
+                    Console.Error.WriteLine($"[CodeActions] Refactoring provider {provider.GetType().Name} failed: {ex.Message}");
+                }
+
+                foreach (var action in actions)
+                {
+                    allActions.Add((action, "refactoring"));
                 }
             }
 
             if (allActions.Count == 0)
             {
                 var result = new StringBuilder();
-                result.AppendLine("## Diagnostics Found");
-                result.AppendLine();
-                foreach (var d in diagnostics)
+                if (diagnostics.Count > 0)
                 {
-                    var lineSpan = d.Location.GetLineSpan();
-                    result.AppendLine($"- **{d.Id}** ({d.Severity}): {d.GetMessage()} (line {lineSpan.StartLinePosition.Line + 1})");
+                    result.AppendLine("## Diagnostics Found");
+                    result.AppendLine();
+                    foreach (var d in diagnostics)
+                    {
+                        var lineSpan = d.Location.GetLineSpan();
+                        result.AppendLine($"- **{d.Id}** ({d.Severity}): {d.GetMessage()} (line {lineSpan.StartLinePosition.Line + 1})");
+                    }
+                    result.AppendLine();
                 }
-                result.AppendLine();
-                result.AppendLine("No code fixes available for these diagnostics.");
+                result.AppendLine("No code actions or refactorings available at this position.");
                 return result.ToString();
             }
 
@@ -185,26 +216,29 @@ public static class CodeActionsTool
 
             // List available actions
             var sb = new StringBuilder();
-            sb.AppendLine("## Diagnostics");
-            sb.AppendLine();
-            foreach (var d in diagnostics.DistinctBy(d => d.Id + d.GetMessage()))
+            if (diagnostics.Count > 0)
             {
-                var lineSpan = d.Location.GetLineSpan();
-                sb.AppendLine($"- **{d.Id}** ({d.Severity}): {d.GetMessage()} (line {lineSpan.StartLinePosition.Line + 1})");
+                sb.AppendLine("## Diagnostics");
+                sb.AppendLine();
+                foreach (var d in diagnostics.DistinctBy(d => d.Id + d.GetMessage()))
+                {
+                    var lineSpan = d.Location.GetLineSpan();
+                    sb.AppendLine($"- **{d.Id}** ({d.Severity}): {d.GetMessage()} (line {lineSpan.StartLinePosition.Line + 1})");
+                }
+                sb.AppendLine();
             }
-            sb.AppendLine();
 
-            sb.AppendLine($"## Available Code Fixes ({allActions.Count})");
+            sb.AppendLine($"## Available Code Actions ({allActions.Count})");
             sb.AppendLine();
 
             for (int i = 0; i < allActions.Count; i++)
             {
-                var (action, diag) = allActions[i];
-                sb.AppendLine($"{i + 1}. **{action.Title}** (fixes {diag.Id})");
+                var (action, source) = allActions[i];
+                sb.AppendLine($"{i + 1}. **{action.Title}** ({source})");
             }
 
             sb.AppendLine();
-            sb.AppendLine("Use `applyIndex` parameter to apply a specific fix.");
+            sb.AppendLine("Use `applyIndex` parameter to apply a specific action.");
 
             return sb.ToString();
         }
@@ -216,8 +250,13 @@ public static class CodeActionsTool
         }
     }
 
+    private static IReadOnlyList<CodeFixProvider>? s_cachedProviders;
+
     private static IReadOnlyList<CodeFixProvider> GetCodeFixProviders(Project project)
     {
+        if (s_cachedProviders is not null)
+            return s_cachedProviders;
+
         var providers = new List<CodeFixProvider>();
 
         // Load built-in Roslyn C# code fix providers from the Features assembly
@@ -246,6 +285,45 @@ public static class CodeActionsTool
             // Features assembly may not be available
         }
 
+        s_cachedProviders = providers;
+        return providers;
+    }
+
+    private static IReadOnlyList<CodeRefactoringProvider>? s_cachedRefactoringProviders;
+
+    private static IReadOnlyList<CodeRefactoringProvider> GetRefactoringProviders()
+    {
+        if (s_cachedRefactoringProviders is not null)
+            return s_cachedRefactoringProviders;
+
+        var providers = new List<CodeRefactoringProvider>();
+
+        try
+        {
+            var featuresAssembly = System.Reflection.Assembly.Load("Microsoft.CodeAnalysis.CSharp.Features");
+
+            foreach (var type in featuresAssembly.GetTypes())
+            {
+                if (type.IsAbstract || !typeof(CodeRefactoringProvider).IsAssignableFrom(type))
+                    continue;
+
+                try
+                {
+                    if (Activator.CreateInstance(type) is CodeRefactoringProvider provider)
+                        providers.Add(provider);
+                }
+                catch
+                {
+                    // Some providers require dependencies or special constructors
+                }
+            }
+        }
+        catch
+        {
+            // Features assembly may not be available
+        }
+
+        s_cachedRefactoringProviders = providers;
         return providers;
     }
 }

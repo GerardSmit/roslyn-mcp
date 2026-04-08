@@ -474,6 +474,29 @@ public class LineCoverage
     public int Hits { get; set; }
     public bool IsBranch { get; set; }
     public string? ConditionCoverage { get; set; }
+
+    /// <summary>
+    /// Returns true if all branch conditions are covered (e.g. "100% (2/2)").
+    /// </summary>
+    public bool IsFullBranchCoverage
+    {
+        get
+        {
+            if (!IsBranch || ConditionCoverage is null) return true;
+            // Parse "NN% (x/y)" — fully covered when x == y
+            int parenStart = ConditionCoverage.IndexOf('(');
+            int slash = ConditionCoverage.IndexOf('/');
+            int parenEnd = ConditionCoverage.IndexOf(')');
+            if (parenStart >= 0 && slash > parenStart && parenEnd > slash)
+            {
+                var coveredStr = ConditionCoverage[(parenStart + 1)..slash];
+                var totalStr = ConditionCoverage[(slash + 1)..parenEnd];
+                if (int.TryParse(coveredStr, out int covered) && int.TryParse(totalStr, out int total))
+                    return covered >= total;
+            }
+            return false;
+        }
+    }
 }
 
 public record CoverageResult(bool Success, string Message, CoverageData? Data);

@@ -37,14 +37,16 @@ public class CodeActionsToolTests
     }
 
     [Fact]
-    public async Task WhenNoDiagnosticsAtPositionThenReportsNone()
+    public async Task WhenNoDiagnosticsAtPositionThenReportsActionsOrNone()
     {
-        // Calculator.cs has no diagnostics at Add
+        // Calculator.cs has no diagnostics at Add, but may have refactoring actions
         var result = await RoslynMCP.Tools.CodeActionsTool.GetCodeActions(
             FixturePaths.CalculatorFile,
             "public int [|Add|](int a, int b)");
 
-        Assert.Contains("No diagnostics found", result);
+        Assert.True(
+            result.Contains("Available Code Actions") || result.Contains("No code actions or refactorings"),
+            $"Expected code actions or 'no actions' message, got: {result}");
     }
 
     [Fact]
@@ -72,8 +74,7 @@ public class CodeActionsToolTests
         // Should either say invalid index or no diagnostics
         Assert.True(
             result.Contains("applyIndex must be between") ||
-            result.Contains("No diagnostics") ||
-            result.Contains("No code fixes"),
-            $"Expected index error or no diagnostics, got: {result}");
+            result.Contains("No code actions or refactorings"),
+            $"Expected index error or no actions, got: {result}");
     }
 }

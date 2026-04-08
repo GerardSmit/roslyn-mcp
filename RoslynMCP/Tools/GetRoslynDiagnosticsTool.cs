@@ -60,18 +60,8 @@ public static class GetRoslynDiagnosticsTool
         }
     }
 
-    private static bool TryParseSeverityFilter(string filter, out DiagnosticSeverity? result)
-    {
-        switch (filter.ToLowerInvariant())
-        {
-            case "error": result = DiagnosticSeverity.Error; return true;
-            case "warning": result = DiagnosticSeverity.Warning; return true;
-            case "info": result = DiagnosticSeverity.Info; return true;
-            case "hidden": result = DiagnosticSeverity.Hidden; return true;
-            case "all": result = null; return true;
-            default: result = null; return false;
-        }
-    }
+    private static bool TryParseSeverityFilter(string filter, out DiagnosticSeverity? result) =>
+        PathHelper.TryParseSeverityFilter(filter, out result);
 
     /// <summary>
     /// Collects all diagnostics for the target file from compilation and (optionally)
