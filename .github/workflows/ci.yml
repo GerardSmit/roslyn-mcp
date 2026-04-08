@@ -15,6 +15,9 @@ on:
           - major
         default: patch
 
+env:
+  NETCOREDBG_VERSION: "3.1.3-1062"
+
 jobs:
   build-test:
     strategy:
@@ -33,33 +36,51 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
       - name: Restore
         run: dotnet restore RoslynMCP.sln
 
       - name: Build
         run: dotnet build RoslynMCP.sln --configuration Release --no-restore --nologo
 
+      - name: Cache netcoredbg
+        id: cache-netcoredbg
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.os == 'Linux' && '/usr/local/netcoredbg' || 'C:\netcoredbg\netcoredbg' }}
+          key: netcoredbg-${{ runner.os }}-${{ env.NETCOREDBG_VERSION }}
+
       - name: Install netcoredbg (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && steps.cache-netcoredbg.outputs.cache-hit != 'true'
         run: |
-          curl -sSL https://api.github.com/repos/Samsung/netcoredbg/releases/latest \
-            | grep -oP '"browser_download_url":\s*"\K[^"]*netcoredbg-linux-amd64\.tar\.gz' \
-            | head -1 \
-            | xargs curl -sSL -o /tmp/netcoredbg.tar.gz
+          curl -sSL "https://github.com/Samsung/netcoredbg/releases/download/${{ env.NETCOREDBG_VERSION }}/netcoredbg-linux-amd64.tar.gz" \
+            -o /tmp/netcoredbg.tar.gz
           sudo mkdir -p /usr/local/netcoredbg
           sudo tar xzf /tmp/netcoredbg.tar.gz -C /usr/local
-          echo "/usr/local/netcoredbg" >> $GITHUB_PATH
 
       - name: Install netcoredbg (Windows)
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.cache-netcoredbg.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $release = Invoke-RestMethod https://api.github.com/repos/Samsung/netcoredbg/releases/latest
-          $asset = $release.assets | Where-Object { $_.name -like '*win64.zip' } | Select-Object -First 1
+          $url = "https://github.com/Samsung/netcoredbg/releases/download/${{ env.NETCOREDBG_VERSION }}/netcoredbg-win64.zip"
           $zipPath = "$env:TEMP\netcoredbg.zip"
-          Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath
+          Invoke-WebRequest -Uri $url -OutFile $zipPath
           Expand-Archive -Path $zipPath -DestinationPath "C:\netcoredbg" -Force
-          echo "C:\netcoredbg\netcoredbg" | Out-File -Append -FilePath $env:GITHUB_PATH
+
+      - name: Add netcoredbg to PATH (Linux)
+        if: runner.os == 'Linux'
+        run: echo "/usr/local/netcoredbg" >> $GITHUB_PATH
+
+      - name: Add netcoredbg to PATH (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: echo "C:\netcoredbg\netcoredbg" | Out-File -Append -FilePath $env:GITHUB_PATH
 
       - name: Test
         run: dotnet test RoslynMCP.sln --configuration Release --no-build --nologo -p:UseAppHost=false
