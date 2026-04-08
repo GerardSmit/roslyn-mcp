@@ -44,8 +44,7 @@ public class RunTestsToolTests
 
         var result = await RunTestsTool.RunTests(
             testProjectPath,
-            "FullyQualifiedName=RoslynMCP.Tests.RunTestsToolTests.WhenProjectIsNotTestProjectThenReturnsError",
-            build: false);
+            "FullyQualifiedName=RoslynMCP.Tests.RunTestsToolTests.WhenProjectIsNotTestProjectThenReturnsError");
 
         Assert.Contains("Passed", result);
     }
@@ -58,8 +57,7 @@ public class RunTestsToolTests
 
         var result = await RunTestsTool.RunTests(
             testProjectPath,
-            "FullyQualifiedName=NonExistent.Test.Method",
-            build: false);
+            "FullyQualifiedName=NonExistent.Test.Method");
 
         // Should run but find no tests
         Assert.NotNull(result);

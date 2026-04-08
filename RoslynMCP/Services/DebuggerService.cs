@@ -66,7 +66,7 @@ internal sealed partial class DebuggerService : IDisposable
         _state = DebugState.Starting;
 
         // Build the test project in Debug configuration for debugging
-        var buildResult = await RunProcessAsync("dotnet", $"build \"{csprojPath}\" -c Debug --no-restore", cancellationToken);
+        var buildResult = await RunProcessAsync("dotnet", $"build \"{csprojPath}\" -c Debug", cancellationToken);
         if (buildResult.exitCode != 0)
         {
             _state = DebugState.NotStarted;

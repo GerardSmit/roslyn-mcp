@@ -284,7 +284,7 @@ internal static class WorkspaceService
                         var includeEnd = line.IndexOf('"', includeStart);
                         if (includeEnd < 0) continue;
 
-                        var refPath = line[includeStart..includeEnd];
+                        var refPath = line[includeStart..includeEnd].Replace('\\', Path.DirectorySeparatorChar);
                         var resolvedPath = Path.GetFullPath(Path.Combine(dir, refPath));
                         if (string.Equals(resolvedPath, normalizedTarget, StringComparison.OrdinalIgnoreCase))
                         {
