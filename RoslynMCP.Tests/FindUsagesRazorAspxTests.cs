@@ -55,7 +55,7 @@ public class FindUsagesRazorAspxTests
             markupSnippet: "public static string [|FormatTitle|](string title)");
 
         Assert.Contains("Summary", result);
-        Assert.Contains("C# references", result);
+        Assert.Contains("C# reference", result);
     }
 
     [Fact]

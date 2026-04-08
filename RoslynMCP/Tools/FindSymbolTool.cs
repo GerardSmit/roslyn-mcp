@@ -25,6 +25,8 @@ public static class FindSymbolTool
     public static async Task<string> FindSymbol(
         [Description("Path to any file in the project to search.")] string filePath,
         [Description("Symbol name or pattern to search for.")] string symbolName,
+        [Description("Maximum number of results to return. Default: 50.")]
+        int maxResults = 50,
         CancellationToken cancellationToken = default)
     {
         try
@@ -40,7 +42,7 @@ public static class FindSymbolTool
             var symbols = (await SymbolFinder.FindSourceDeclarationsWithPatternAsync(
                 fileCtx.Project, symbolName, SymbolFilter.All, cancellationToken)).ToList();
 
-            return FormatResults(symbols, symbolName, fileCtx.Project.Name);
+            return FormatResults(symbols, symbolName, fileCtx.Project.Name, fileCtx.ProjectDir, maxResults);
         }
         catch (OperationCanceledException)
         {
@@ -54,7 +56,7 @@ public static class FindSymbolTool
     }
 
     private static string FormatResults(
-        List<ISymbol> symbols, string pattern, string projectName)
+        List<ISymbol> symbols, string pattern, string projectName, string? projectDir, int maxResults)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"# Symbol Search: \"{pattern}\" in {projectName}");
@@ -66,13 +68,19 @@ public static class FindSymbolTool
             return sb.ToString();
         }
 
-        sb.AppendLine($"Found **{symbols.Count}** symbol(s).");
+        int total = symbols.Count;
+        bool truncated = total > maxResults;
+        int showing = Math.Min(total, maxResults);
+
+        sb.AppendLine(truncated
+            ? $"Found **{total}** symbol(s), showing first {showing}."
+            : $"Found **{total}** symbol(s).");
         sb.AppendLine();
         sb.AppendLine("| # | Symbol | Kind | File | Line |");
         sb.AppendLine("|---|--------|------|------|------|");
 
         int index = 1;
-        foreach (var symbol in symbols.OrderBy(s => s.Name))
+        foreach (var symbol in symbols.OrderBy(s => s.Name).Take(maxResults))
         {
             var location = symbol.Locations.FirstOrDefault(l => l.IsInSource);
             string file = "—";
@@ -81,13 +89,15 @@ public static class FindSymbolTool
             if (location is not null)
             {
                 var lineSpan = location.GetLineSpan();
-                file = Path.GetFileName(lineSpan.Path);
+                file = projectDir is not null
+                    ? Path.GetRelativePath(projectDir, lineSpan.Path)
+                    : Path.GetFileName(lineSpan.Path);
                 line = (lineSpan.StartLinePosition.Line + 1).ToString();
             }
 
             sb.AppendLine(
                 $"| {index} | {MarkdownHelper.EscapeTableCell(symbol.ToDisplayString())} | " +
-                $"{symbol.Kind} | {file} | {line} |");
+                $"{symbol.Kind} | {MarkdownHelper.EscapeTableCell(file)} | {line} |");
             index++;
         }
 

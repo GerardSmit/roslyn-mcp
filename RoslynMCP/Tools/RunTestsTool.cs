@@ -23,6 +23,8 @@ public static class RunTestsTool
         string? filter = null,
         [Description("Whether to build before running tests. Default is true.")]
         bool build = true,
+        [Description("Timeout in seconds for the test run. Default is 300 (5 minutes). Set to 0 for no timeout.")]
+        int timeoutSeconds = 300,
         CancellationToken cancellationToken = default)
     {
         try
@@ -80,7 +82,19 @@ public static class RunTestsTool
 
             try
             {
-                await process.WaitForExitAsync(cancellationToken);
+                using var timeoutCts = timeoutSeconds > 0
+                    ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+                    : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+
+                if (timeoutSeconds > 0)
+                    timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+
+                await process.WaitForExitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                return $"Test run timed out after {timeoutSeconds} seconds.";
             }
             catch (OperationCanceledException)
             {

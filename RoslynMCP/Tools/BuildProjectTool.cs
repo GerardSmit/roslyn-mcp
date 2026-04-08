@@ -1,0 +1,191 @@
+using System.ComponentModel;
+using System.Diagnostics;
+using System.Text;
+using ModelContextProtocol.Server;
+using RoslynMCP.Services;
+
+namespace RoslynMCP.Tools;
+
+[McpServerToolType]
+public static class BuildProjectTool
+{
+    [McpServerTool, Description(
+        "Build a .NET project or solution. Returns build output including errors and warnings. " +
+        "Use this to check for compilation issues without running tests.")]
+    public static async Task<string> BuildProject(
+        [Description("Path to the .csproj, .sln file, or a source file in the project.")]
+        string projectPath,
+        [Description("Build configuration. Default: 'Release'.")]
+        string configuration = "Release",
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            string resolved = ResolveBuildTarget(projectPath);
+            if (resolved.StartsWith("Error:", StringComparison.Ordinal))
+                return resolved;
+
+            var args = new StringBuilder();
+            args.Append("build ");
+            args.Append('"');
+            args.Append(resolved);
+            args.Append('"');
+            args.Append($" --configuration {configuration}");
+            args.Append(" --nologo");
+
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "dotnet",
+                    Arguments = args.ToString(),
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                    WorkingDirectory = Path.GetDirectoryName(resolved)
+                }
+            };
+
+            var stdout = new StringBuilder();
+            var stderr = new StringBuilder();
+
+            process.OutputDataReceived += (_, e) =>
+            {
+                if (e.Data is not null) stdout.AppendLine(e.Data);
+            };
+            process.ErrorDataReceived += (_, e) =>
+            {
+                if (e.Data is not null) stderr.AppendLine(e.Data);
+            };
+
+            process.Start();
+            process.BeginOutputReadLine();
+            process.BeginErrorReadLine();
+
+            try
+            {
+                await process.WaitForExitAsync(cancellationToken);
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                return "Build was cancelled.";
+            }
+
+            return FormatBuildOutput(stdout.ToString(), stderr.ToString(), process.ExitCode, resolved);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            return $"Error: {ex.Message}";
+        }
+    }
+
+    private static string ResolveBuildTarget(string path)
+    {
+        var normalized = PathHelper.NormalizePath(path);
+
+        if (normalized.EndsWith(".sln", StringComparison.OrdinalIgnoreCase) && File.Exists(normalized))
+            return normalized;
+
+        if (normalized.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) && File.Exists(normalized))
+            return normalized;
+
+        // If it's a source file, find the nearest .csproj
+        var csproj = RunTestsTool.ResolveCsprojPath(normalized);
+        if (csproj is not null) return csproj;
+
+        // If it's a directory, look for .sln or .csproj
+        if (Directory.Exists(normalized))
+        {
+            var slnFiles = Directory.GetFiles(normalized, "*.sln", SearchOption.TopDirectoryOnly);
+            if (slnFiles.Length > 0) return slnFiles[0];
+
+            var csprojFiles = Directory.GetFiles(normalized, "*.csproj", SearchOption.TopDirectoryOnly);
+            if (csprojFiles.Length > 0) return csprojFiles[0];
+        }
+
+        return $"Error: Could not find a buildable target for '{path}'.";
+    }
+
+    private static string FormatBuildOutput(string stdout, string stderr, int exitCode, string target)
+    {
+        var sb = new StringBuilder();
+
+        if (exitCode == 0)
+        {
+            sb.AppendLine("✅ **Build Succeeded**");
+        }
+        else
+        {
+            sb.AppendLine("❌ **Build Failed**");
+        }
+
+        sb.AppendLine();
+        sb.AppendLine($"**Target**: {Path.GetFileName(target)}");
+        sb.AppendLine();
+
+        // Extract errors and warnings from build output
+        var errors = new List<string>();
+        var warnings = new List<string>();
+
+        foreach (var rawLine in stdout.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r').Trim();
+            if (string.IsNullOrWhiteSpace(line)) continue;
+
+            if (line.Contains(": error ", StringComparison.Ordinal))
+                errors.Add(line);
+            else if (line.Contains(": warning ", StringComparison.Ordinal))
+                warnings.Add(line);
+        }
+
+        if (errors.Count > 0)
+        {
+            sb.AppendLine($"**Errors ({errors.Count}):**");
+            sb.AppendLine("```");
+            foreach (var error in errors)
+                sb.AppendLine(error);
+            sb.AppendLine("```");
+            sb.AppendLine();
+        }
+
+        if (warnings.Count > 0)
+        {
+            sb.AppendLine($"**Warnings ({warnings.Count}):**");
+            sb.AppendLine("```");
+            foreach (var warning in warnings)
+                sb.AppendLine(warning);
+            sb.AppendLine("```");
+            sb.AppendLine();
+        }
+
+        // On failure with no structured errors found, include raw output
+        if (exitCode != 0 && errors.Count == 0)
+        {
+            var raw = stdout.Trim();
+            if (!string.IsNullOrEmpty(raw))
+            {
+                sb.AppendLine("**Output:**");
+                sb.AppendLine("```");
+                sb.AppendLine(raw);
+                sb.AppendLine("```");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(stderr))
+        {
+            var filtered = stderr.Trim();
+            if (!string.IsNullOrWhiteSpace(filtered))
+            {
+                sb.AppendLine("**Stderr:**");
+                sb.AppendLine("```");
+                sb.AppendLine(filtered);
+                sb.AppendLine("```");
+            }
+        }
+
+        return sb.ToString();
+    }
+}

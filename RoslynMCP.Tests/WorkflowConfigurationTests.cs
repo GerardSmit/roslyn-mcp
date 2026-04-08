@@ -15,24 +15,27 @@ public class WorkflowConfigurationTests
     }
 
     [Fact]
-    public void PublishWorkflowExistsAndPublishesRoslynMcpToNuGet()
+    public void ReleaseWorkflowExistsWithTagDrivenVersioning()
     {
         string content = File.ReadAllText(GetRepoPath(".github", "workflows", "publish.yml"));
 
-        Assert.Contains("branches:", content, StringComparison.Ordinal);
-        Assert.Contains("- main", content, StringComparison.Ordinal);
+        // Tag-driven trigger
+        Assert.Contains("tags:", content, StringComparison.Ordinal);
+        Assert.Contains("\"v*\"", content, StringComparison.Ordinal);
+        // Workflow dispatch with bump input
+        Assert.Contains("workflow_dispatch:", content, StringComparison.Ordinal);
+        Assert.Contains("bump:", content, StringComparison.Ordinal);
+        // Version computation
+        Assert.Contains("Determine version", content, StringComparison.Ordinal);
         Assert.Contains("fetch-depth: 0", content, StringComparison.Ordinal);
-        Assert.Contains("Compute package version", content, StringComparison.Ordinal);
-        Assert.Contains("git describe --tags --match 'v*' --abbrev=0", content, StringComparison.Ordinal);
-        Assert.Contains("git rev-list \"${latest_tag}..HEAD\" --count", content, StringComparison.Ordinal);
-        Assert.Contains("git rev-list HEAD --count", content, StringComparison.Ordinal);
-        Assert.Contains("package_version=\"$major.$minor.$((patch + commit_count))\"", content, StringComparison.Ordinal);
+        // Build, pack, publish
         Assert.Contains("dotnet pack RoslynMCP/RoslynMCP.csproj", content, StringComparison.Ordinal);
-        Assert.Contains("/p:PackageVersion=${{ steps.version.outputs.package_version }}", content, StringComparison.Ordinal);
         Assert.Contains("RoslynSense", content, StringComparison.Ordinal);
         Assert.Contains("dotnet nuget push", content, StringComparison.Ordinal);
         Assert.Contains("NUGET_API_KEY", content, StringComparison.Ordinal);
-        Assert.DoesNotContain("GITHUB_RUN_NUMBER", content, StringComparison.Ordinal);
+        // GitHub Release
+        Assert.Contains("softprops/action-gh-release", content, StringComparison.Ordinal);
+        Assert.Contains("contents: write", content, StringComparison.Ordinal);
     }
 
     private static string GetRepoPath(params string[] parts)

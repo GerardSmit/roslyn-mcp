@@ -429,7 +429,10 @@ internal sealed partial class DebuggerService : IDisposable
             sb.AppendLine("**Breakpoints:**");
             foreach (var bp in _breakpoints.Values.OrderBy(b => b.Id))
             {
-                sb.AppendLine($"  #{bp.Id} — {Path.GetFileName(bp.FilePath)}:{bp.Line}");
+                var fileName = string.IsNullOrEmpty(bp.FilePath)
+                    ? $"breakpoint {bp.Id}"
+                    : $"{Path.GetFileName(bp.FilePath.Replace('\\', '/'))}:{bp.Line}";
+                sb.AppendLine($"  #{bp.Id} — {fileName}");
             }
         }
 
@@ -604,7 +607,8 @@ internal sealed partial class DebuggerService : IDisposable
         {
             foreach (var (file, line) in immediateBreakpoints)
             {
-                var escapedPath = EscapeMiString(PathHelper.NormalizePath(file));
+                var normalizedPath = PathHelper.NormalizePath(file);
+                var escapedPath = EscapeMiString(normalizedPath);
                 await _netcoredbgProcess.StandardInput.WriteLineAsync(
                     $"-break-insert \"{escapedPath}:{line}\"".AsMemory(), cancellationToken);
             }
@@ -692,6 +696,23 @@ internal sealed partial class DebuggerService : IDisposable
                             ?? ExtractMiField(parseLine, "file") ?? "";
                         var bpLineStr = ExtractMiField(parseLine, "line");
                         _ = int.TryParse(bpLineStr, out var bpLine);
+
+                        // For pending breakpoints, try to extract path from orig-location
+                        if (string.IsNullOrEmpty(bpFile))
+                        {
+                            var origLocation = ExtractMiField(parseLine, "original-location");
+                            if (origLocation is not null)
+                            {
+                                var colonIdx = origLocation.LastIndexOf(':');
+                                if (colonIdx > 0)
+                                {
+                                    bpFile = origLocation[..colonIdx];
+                                    if (int.TryParse(origLocation[(colonIdx + 1)..], out var origLine))
+                                        bpLine = origLine;
+                                }
+                            }
+                        }
+
                         _breakpoints.TryAdd(bpNum, new BreakpointInfo(bpNum, bpFile, bpLine));
                     }
                 }
@@ -933,7 +954,8 @@ internal sealed partial class DebuggerService : IDisposable
                     var entry = current.ToString();
                     var entryName = ExtractMiField(entry, "name") ?? "?";
                     var entryValue = ExtractMiField(entry, "value") ?? "?";
-                    sb.AppendLine($"  {entryName} = {UnescapeMiString(entryValue)}");
+                    if (entryName is not "?" and not "")
+                        sb.AppendLine($"  {entryName} = {UnescapeMiString(entryValue)}");
                 }
                 continue;
             }
@@ -953,17 +975,45 @@ internal sealed partial class DebuggerService : IDisposable
 
         // Parse stack=[frame={level="0",func="...",file="...",line="..."},...]
         var framePattern = StackFrameRegex();
-        foreach (Match match in framePattern.Matches(response))
+        var matches = framePattern.Matches(response);
+        var skippedCount = 0;
+
+        foreach (Match match in matches)
         {
             var content = match.Groups[1].Value;
             var level = ExtractMiField(content, "level") ?? "?";
-            var func = ExtractMiField(content, "func") ?? "unknown";
+            var func = ExtractMiField(content, "func") ?? "";
             var file = ExtractMiField(content, "file") ?? "";
             var line = ExtractMiField(content, "line") ?? "?";
 
+            // Skip frames with no useful information (no function name and no file)
+            if (string.IsNullOrEmpty(func) && string.IsNullOrEmpty(file))
+            {
+                skippedCount++;
+                continue;
+            }
+
+            // Collapse native/framework transition frames
+            if (func is "[Native Frames]")
+            {
+                skippedCount++;
+                continue;
+            }
+
+            // Flush skipped frame counter
+            if (skippedCount > 0)
+            {
+                sb.AppendLine($"  ... ({skippedCount} framework frame{(skippedCount == 1 ? "" : "s")})");
+                skippedCount = 0;
+            }
+
+            var funcDisplay = string.IsNullOrEmpty(func) ? "unknown" : func;
             var fileDisplay = string.IsNullOrEmpty(file) ? "" : $" at {Path.GetFileName(file.Replace('\\', '/'))}:{line}";
-            sb.AppendLine($"  #{level} {func}{fileDisplay}");
+            sb.AppendLine($"  #{level} {funcDisplay}{fileDisplay}");
         }
+
+        if (skippedCount > 0)
+            sb.AppendLine($"  ... ({skippedCount} framework frame{(skippedCount == 1 ? "" : "s")})");
 
         return sb.ToString();
     }

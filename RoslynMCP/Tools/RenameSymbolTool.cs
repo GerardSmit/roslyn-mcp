@@ -34,6 +34,8 @@ public static class RenameSymbolTool
         [Description("The new name for the symbol.")] string newName,
         [Description("If true, show a preview of changes without applying them. Default: false.")]
         bool dryRun = false,
+        [Description("If true, also rename overloaded methods with the same name. Default: false.")]
+        bool renameOverloads = false,
         CancellationToken cancellationToken = default)
     {
         try
@@ -64,7 +66,7 @@ public static class RenameSymbolTool
             // Perform the Roslyn rename (C# files)
             var solution = ctx.Workspace.CurrentSolution;
             var renameOptions = new SymbolRenameOptions(
-                RenameOverloads: false,
+                RenameOverloads: renameOverloads,
                 RenameInStrings: false,
                 RenameInComments: false,
                 RenameFile: false);

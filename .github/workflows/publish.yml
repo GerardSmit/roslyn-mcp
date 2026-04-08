@@ -1,18 +1,26 @@
-name: Publish
+name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
 
 jobs:
-  publish-nuget:
+  release:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
 
     steps:
       - name: Checkout
@@ -25,6 +33,44 @@ jobs:
         with:
           dotnet-version: 10.0.x
 
+      - name: Determine version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
+            # Triggered by pushing a v* tag — use it directly
+            version="${GITHUB_REF_NAME#v}"
+          else
+            # workflow_dispatch — compute next version from latest tag
+            bump="${{ github.event.inputs.bump }}"
+            latest_tag=$(git tag -l 'v*' --sort=-v:refname | head -1 || true)
+
+            if [[ -n "$latest_tag" ]]; then
+              base="${latest_tag#v}"
+            else
+              base=$(grep -oPm1 '(?<=<VersionPrefix>)[^<]+' RoslynMCP/RoslynMCP.csproj)
+            fi
+
+            IFS='.' read -r major minor patch <<< "$base"
+            case "$bump" in
+              major) version="$((major + 1)).0.0" ;;
+              minor) version="$major.$((minor + 1)).0" ;;
+              patch) version="$major.$minor.$((patch + 1))" ;;
+            esac
+          fi
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing version $version"
+
+      - name: Create tag (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${{ steps.version.outputs.version }}" -m "Release v${{ steps.version.outputs.version }}"
+          git push origin "v${{ steps.version.outputs.version }}"
+
       - name: Restore
         run: dotnet restore RoslynMCP.sln
 
@@ -34,37 +80,42 @@ jobs:
       - name: Test
         run: dotnet test RoslynMCP.sln --configuration Release --no-build --nologo -p:UseAppHost=false
 
-      - name: Compute package version
-        id: version
-        shell: bash
-        run: |
-          version_prefix=$(grep -oPm1 '(?<=<VersionPrefix>)[^<]+' RoslynMCP/RoslynMCP.csproj)
-
-          if [[ "${GITHUB_REF_TYPE}" == "tag" && "${GITHUB_REF_NAME}" == v* ]]; then
-            package_version="${GITHUB_REF_NAME#v}"
-          elif [[ "${GITHUB_REF_NAME}" == "main" ]]; then
-            latest_tag=$(git describe --tags --match 'v*' --abbrev=0 2>/dev/null || true)
-
-            if [[ -n "$latest_tag" ]]; then
-              base_version="${latest_tag#v}"
-              commit_count=$(git rev-list "${latest_tag}..HEAD" --count)
-            else
-              base_version="$version_prefix"
-              commit_count=$(git rev-list HEAD --count)
-            fi
-
-            IFS='.' read -r major minor patch <<< "$base_version"
-            package_version="$major.$minor.$((patch + commit_count))"
-          else
-            echo "This workflow only publishes from main or a version tag." >&2
-            exit 1
-          fi
-
-          echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
-          echo "Publishing RoslynSense version $package_version"
-
-      - name: Pack RoslynSense
-        run: dotnet pack RoslynMCP/RoslynMCP.csproj -c Release -o artifacts --no-build --nologo /p:ContinuousIntegrationBuild=true /p:Version=${{ steps.version.outputs.package_version }} /p:PackageVersion=${{ steps.version.outputs.package_version }}
+      - name: Pack
+        run: >
+          dotnet pack RoslynMCP/RoslynMCP.csproj
+          -c Release -o artifacts --no-build --nologo
+          /p:ContinuousIntegrationBuild=true
+          /p:Version=${{ steps.version.outputs.version }}
+          /p:PackageVersion=${{ steps.version.outputs.version }}
 
       - name: Publish to NuGet
-        run: dotnet nuget push "artifacts/RoslynSense.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ secrets.NUGET_API_KEY }}" --skip-duplicate
+        run: >
+          dotnet nuget push "artifacts/RoslynSense.*.nupkg"
+          --source https://api.nuget.org/v3/index.json
+          --api-key "${{ secrets.NUGET_API_KEY }}"
+          --skip-duplicate
+
+      - name: Generate release notes
+        id: notes
+        shell: bash
+        run: |
+          previous_tag=$(git tag -l 'v*' --sort=-v:refname | grep -v "^${{ steps.version.outputs.tag }}$" | head -1 || true)
+          if [[ -n "$previous_tag" ]]; then
+            log=$(git log --pretty=format:"- %s (%h)" "$previous_tag..${{ steps.version.outputs.tag }}" --no-merges)
+          else
+            log=$(git log --pretty=format:"- %s (%h)" --no-merges)
+          fi
+
+          # Write to file to handle multiline
+          echo "$log" > release_notes.md
+          echo "" >> release_notes.md
+          echo "**NuGet:** [RoslynSense ${{ steps.version.outputs.version }}](https://www.nuget.org/packages/RoslynSense/${{ steps.version.outputs.version }})" >> release_notes.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: RoslynSense v${{ steps.version.outputs.version }}
+          body_path: release_notes.md
+          files: artifacts/*.nupkg
+          generate_release_notes: false

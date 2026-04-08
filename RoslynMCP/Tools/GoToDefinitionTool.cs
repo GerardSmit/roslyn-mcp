@@ -29,6 +29,8 @@ public static class GoToDefinitionTool
             "Code snippet with [| |] markers around the target symbol, " +
             "e.g. 'var x = [|Foo|].Bar();'.")]
         string markupSnippet,
+        [Description("Number of lines of context to show around the definition. Default: 5.")]
+        int contextLines = 5,
         CancellationToken cancellationToken = default)
     {
         try
@@ -41,7 +43,7 @@ public static class GoToDefinitionTool
             if (!ctx.IsResolved)
                 return ToolHelper.FormatResolutionError(ctx.Resolution);
 
-            return await FormatDefinitionAsync(ctx.Symbol!, ctx.Project, cancellationToken);
+            return await FormatDefinitionAsync(ctx.Symbol!, ctx.Project, contextLines, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -55,7 +57,7 @@ public static class GoToDefinitionTool
     }
 
     private static async Task<string> FormatDefinitionAsync(
-        ISymbol symbol, Project project, CancellationToken cancellationToken)
+        ISymbol symbol, Project project, int contextLines, CancellationToken cancellationToken)
     {
         // For constructors, use the containing type name as the display header
         string displayName = symbol is IMethodSymbol { MethodKind: Microsoft.CodeAnalysis.MethodKind.Constructor }
@@ -92,6 +94,7 @@ public static class GoToDefinitionTool
                 "Source Location",
                 provenance: null,
                 assemblyPath: null,
+                contextLines,
                 cancellationToken);
         }
         else if (metadataLocations.Count > 0)
@@ -113,6 +116,7 @@ public static class GoToDefinitionTool
                         "Decompiled Source",
                         provenance: "auto-decompiled",
                         assemblyPath: decompiled.AssemblyPath,
+                        contextLines,
                         cancellationToken);
                 }
                 else
@@ -140,6 +144,7 @@ public static class GoToDefinitionTool
         string sectionTitle,
         string? provenance,
         string? assemblyPath,
+        int contextLines,
         CancellationToken cancellationToken)
     {
         for (int i = 0; i < locations.Count; i++)
@@ -165,12 +170,12 @@ public static class GoToDefinitionTool
             sb.AppendLine($"**Line**: {line}");
             sb.AppendLine();
 
-            await AppendCodeContextAsync(sb, location, solution, cancellationToken);
+            await AppendCodeContextAsync(sb, location, solution, contextLines, cancellationToken);
         }
     }
 
     private static async Task AppendCodeContextAsync(
-        StringBuilder sb, Location location, Solution solution, CancellationToken cancellationToken)
+        StringBuilder sb, Location location, Solution solution, int contextLines, CancellationToken cancellationToken)
     {
         var tree = location.SourceTree;
         if (tree is null) return;
@@ -185,8 +190,8 @@ public static class GoToDefinitionTool
         if (doc is null) return;
 
         var text = await doc.GetTextAsync(cancellationToken);
-        int contextStart = Math.Max(0, targetLine - 2);
-        int contextEnd = Math.Min(text.Lines.Count - 1, targetLine + 2);
+        int contextStart = Math.Max(0, targetLine - contextLines);
+        int contextEnd = Math.Min(text.Lines.Count - 1, targetLine + contextLines);
 
         sb.AppendLine("```csharp");
         for (int i = contextStart; i <= contextEnd; i++)

@@ -49,6 +49,9 @@ public static class CallHierarchyTool
             SymbolFormatter.AppendSymbolInfo(sb, symbol);
             sb.AppendLine();
 
+            if (direction is not "callers" and not "callees" and not "both")
+                return $"Error: direction must be 'callers', 'callees', or 'both' (got '{direction}').";
+
             bool showCallers = direction is "callers" or "both";
             bool showCallees = direction is "callees" or "both";
 

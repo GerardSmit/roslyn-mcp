@@ -27,6 +27,8 @@ public static class FindUsagesTool
             "Code snippet with [| |] markers around the target symbol, " +
             "e.g. 'var x = [|Foo|].Bar();'.")]
         string markupSnippet,
+        [Description("Maximum number of references to return. Default: 100.")]
+        int maxResults = 100,
         CancellationToken cancellationToken = default)
     {
         try
@@ -53,7 +55,7 @@ public static class FindUsagesTool
             string searchSummary = $"Markup target: `{ctx.Markup.MarkedText}`";
             return await FormatResultsAsync(
                 symbol, references, ctx.SystemPath, searchSummary, ctx.Project.FilePath!,
-                razorSourceMap, aspxIndex, cancellationToken);
+                razorSourceMap, aspxIndex, maxResults, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -77,6 +79,7 @@ public static class FindUsagesTool
         string projectPath,
         RazorSourceMap razorSourceMap,
         AspxProjectIndex aspxIndex,
+        int maxResults,
         CancellationToken cancellationToken)
     {
         var refList = references.ToList();
@@ -96,16 +99,25 @@ public static class FindUsagesTool
 
         results.AppendLine("## References");
         results.AppendLine(
-            $"Found {totalLocations} references in {refList.Count} locations.");
+            $"Found {totalLocations} reference(s) across {refList.Count} symbol definition(s).");
         results.AppendLine();
 
         int referenceCount = 1;
         foreach (var reference in refList)
         {
+            if (referenceCount > maxResults)
+            {
+                results.AppendLine($"_Showing first {maxResults} of {totalLocations} references. Use `maxResults` to see more._");
+                results.AppendLine();
+                break;
+            }
+
             results.AppendLine($"### Reference Definition: {reference.Definition.ToDisplayString()}");
 
             foreach (var location in reference.Locations)
             {
+                if (referenceCount > maxResults) break;
+
                 // Check if this reference is in a Razor source-generated file
                 var mappedRazor = TryMapRazorReference(location, razorSourceMap);
 
@@ -156,7 +168,7 @@ public static class FindUsagesTool
         int aspxCount = aspxRefs.Count;
         var summaryParts = new List<string>
         {
-            $"{totalLocations} C# references across {refList.Count} locations"
+            $"{totalLocations} C# reference(s) across {refList.Count} symbol definition(s)"
         };
         if (aspxCount > 0)
             summaryParts.Add($"{aspxCount} ASPX references");

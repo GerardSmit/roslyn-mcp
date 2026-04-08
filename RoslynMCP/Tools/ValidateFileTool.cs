@@ -70,24 +70,13 @@ public static class ValidateFileTool
                 projectPath, targetFilePath: filePath, diagnosticWriter: Console.Error,
                 cancellationToken: cancellationToken);
 
-            writer.WriteLine($"Loading project: {projectPath}");
-            writer.WriteLine($"Project loaded successfully: {project.Name}");
-
             var document = WorkspaceService.FindDocumentInProject(project, filePath);
 
             if (document == null)
             {
                 writer.WriteLine("Error: File not found in the project documents.");
-                writer.WriteLine("All project documents:");
-                foreach (var doc in project.Documents)
-                {
-                    writer.WriteLine($"  - {doc.FilePath}");
-                }
-
                 return;
             }
-
-            writer.WriteLine($"Document found: {document.Name}");
 
             // Syntax diagnostics
             var syntaxTree = await document.GetSyntaxTreeAsync(cancellationToken);

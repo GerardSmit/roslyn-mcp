@@ -20,6 +20,8 @@ public static class ProjectStructureTool
         "Useful for understanding the project layout before navigating code.")]
     public static async Task<string> GetProjectStructure(
         [Description("Path to the .csproj file or any file in the project.")] string projectOrFilePath,
+        [Description("Include system assemblies (System.*, Microsoft.*) in the assembly references list. Default: false.")]
+        bool includeSystemAssemblies = false,
         CancellationToken cancellationToken = default)
     {
         try
@@ -47,7 +49,7 @@ public static class ProjectStructureTool
             var (_, project) = await WorkspaceService.GetOrOpenProjectAsync(
                 projectPath, cancellationToken: cancellationToken);
 
-            return await FormatProjectStructureAsync(project, projectPath, cancellationToken);
+            return await FormatProjectStructureAsync(project, projectPath, includeSystemAssemblies, cancellationToken);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -60,6 +62,7 @@ public static class ProjectStructureTool
     private static async Task<string> FormatProjectStructureAsync(
         Project project,
         string projectPath,
+        bool includeSystemAssemblies,
         CancellationToken cancellationToken)
     {
         var sb = new StringBuilder();
@@ -143,12 +146,44 @@ public static class ProjectStructureTool
 
         // Package references (deduplicated, showing assembly names)
         var metadataRefs = project.MetadataReferences.ToList();
-        sb.AppendLine($"## Assembly References ({metadataRefs.Count})");
-        sb.AppendLine();
-        foreach (var mRef in metadataRefs.OrderBy(r => Path.GetFileName(r.Display ?? "")))
+        var allAssemblies = metadataRefs
+            .Select(r => Path.GetFileNameWithoutExtension(r.Display ?? "unknown"))
+            .OrderBy(n => n)
+            .ToList();
+
+        if (includeSystemAssemblies)
         {
-            string name = Path.GetFileNameWithoutExtension(mRef.Display ?? "unknown");
-            sb.AppendLine($"- {name}");
+            sb.AppendLine($"## Assembly References ({allAssemblies.Count})");
+            sb.AppendLine();
+            foreach (var name in allAssemblies)
+            {
+                sb.AppendLine($"- {name}");
+            }
+        }
+        else
+        {
+            var nonSystem = allAssemblies
+                .Where(n => !n.StartsWith("System", StringComparison.OrdinalIgnoreCase) &&
+                            !n.StartsWith("Microsoft.", StringComparison.OrdinalIgnoreCase) &&
+                            !n.StartsWith("netstandard", StringComparison.OrdinalIgnoreCase) &&
+                            !n.StartsWith("mscorlib", StringComparison.OrdinalIgnoreCase) &&
+                            !n.StartsWith("WindowsBase", StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            int systemCount = allAssemblies.Count - nonSystem.Count;
+
+            sb.AppendLine($"## Assembly References ({nonSystem.Count} packages, {systemCount} system)");
+            sb.AppendLine();
+            if (nonSystem.Count > 0)
+            {
+                foreach (var name in nonSystem)
+                {
+                    sb.AppendLine($"- {name}");
+                }
+            }
+            else
+            {
+                sb.AppendLine("_(only system assemblies)_");
+            }
         }
 
         return sb.ToString();

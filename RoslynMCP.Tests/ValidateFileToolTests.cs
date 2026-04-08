@@ -43,23 +43,23 @@ public class ValidateFileToolTests
     }
 
     [Fact]
-    public async Task WhenValidFileProvidedThenReportsProjectLoaded()
+    public async Task WhenValidFileProvidedThenReportsNoSemanticErrors()
     {
         var result = await ValidateFileTool.ValidateFile(
             filePath: FixturePaths.CalculatorFile,
             runAnalyzers: false);
 
-        Assert.Contains("Project loaded successfully", result);
+        Assert.Contains("No semantic errors found", result);
     }
 
     [Fact]
-    public async Task WhenValidFileProvidedThenReportsDocumentFound()
+    public async Task WhenValidFileProvidedThenReportsCleanCompilation()
     {
         var result = await ValidateFileTool.ValidateFile(
             filePath: FixturePaths.CalculatorFile,
             runAnalyzers: false);
 
-        Assert.Contains("Document found", result);
+        Assert.Contains("compiles successfully", result);
     }
 
     [Fact]
@@ -98,7 +98,7 @@ public class ValidateFileToolTests
     }
 
     [Fact]
-    public async Task WhenFileIsNotPartOfProjectThenValidationListsProjectDocuments()
+    public async Task WhenFileIsNotPartOfProjectThenValidationReportsError()
     {
         var writer = new StringWriter();
 
@@ -111,7 +111,6 @@ public class ValidateFileToolTests
         var result = writer.ToString();
 
         Assert.Contains("Error: File not found in the project documents.", result);
-        Assert.Contains("All project documents:", result);
     }
 
     [Fact]
@@ -195,16 +194,16 @@ public class ValidateFileToolTests
     }
 
     [Fact]
-    public async Task WhenValidCSharpFileProvidedThenReturnsProjectContextOutput()
+    public async Task WhenValidCSharpFileProvidedThenReturnsValidationOutput()
     {
         var result = await ValidateFileTool.ValidateFile(
             filePath: FixturePaths.CalculatorFile,
             runAnalyzers: false);
 
         // Calculator.cs is validated within project context
-        Assert.Contains("Loading project:", result);
-        Assert.Contains("Project loaded successfully", result);
-        Assert.Contains("Document found", result);
+        Assert.Contains("No syntax errors found", result);
+        Assert.Contains("No semantic errors found", result);
+        Assert.Contains("compiles successfully", result);
     }
 
     [Fact]
@@ -255,7 +254,6 @@ public class ValidateFileToolTests
             filePath: FixturePaths.WarningsFile,
             runAnalyzers: true);
 
-        Assert.Contains("Loading project:", result);
         Assert.Contains("analyzer", result, StringComparison.OrdinalIgnoreCase);
     }
 }

@@ -131,6 +131,7 @@ public static class FindTestsTool
 
             return sb.ToString();
         }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             return $"Error: {ex.Message}";
