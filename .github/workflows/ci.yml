@@ -53,16 +53,16 @@ jobs:
         id: cache-netcoredbg
         uses: actions/cache@v4
         with:
-          path: ${{ runner.os == 'Linux' && '/usr/local/netcoredbg' || 'C:\netcoredbg\netcoredbg' }}
-          key: netcoredbg-${{ runner.os }}-${{ env.NETCOREDBG_VERSION }}
+          path: ${{ runner.os == 'Linux' && '~/.local/netcoredbg' || 'C:\netcoredbg\netcoredbg' }}
+          key: netcoredbg-v2-${{ runner.os }}-${{ env.NETCOREDBG_VERSION }}
 
       - name: Install netcoredbg (Linux)
         if: runner.os == 'Linux' && steps.cache-netcoredbg.outputs.cache-hit != 'true'
         run: |
           curl -sSL "https://github.com/Samsung/netcoredbg/releases/download/${{ env.NETCOREDBG_VERSION }}/netcoredbg-linux-amd64.tar.gz" \
             -o /tmp/netcoredbg.tar.gz
-          sudo mkdir -p /usr/local/netcoredbg
-          sudo tar xzf /tmp/netcoredbg.tar.gz -C /usr/local
+          mkdir -p ~/.local
+          tar xzf /tmp/netcoredbg.tar.gz -C ~/.local
 
       - name: Install netcoredbg (Windows)
         if: runner.os == 'Windows' && steps.cache-netcoredbg.outputs.cache-hit != 'true'
@@ -75,7 +75,7 @@ jobs:
 
       - name: Add netcoredbg to PATH (Linux)
         if: runner.os == 'Linux'
-        run: echo "/usr/local/netcoredbg" >> $GITHUB_PATH
+        run: echo "$HOME/.local/netcoredbg" >> $GITHUB_PATH
 
       - name: Add netcoredbg to PATH (Windows)
         if: runner.os == 'Windows'
