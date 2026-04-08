@@ -1,24 +1,25 @@
 # RoslynSense
 
-## Overview
-A Model Context Protocol (MCP) server that provides C# code analysis capabilities using the Roslyn compiler platform. This tool helps validate C# files, find symbol references, and perform static code analysis within the context of a .NET project.
+A Model Context Protocol (MCP) server that provides C# code analysis, navigation, refactoring, testing, and debugging capabilities using the Roslyn compiler platform.
 
 Inspired by [egorpavlikhin/roslyn-mcp](https://github.com/egorpavlikhin/roslyn-mcp).
 
-## Install as a .NET tool
+## Install
 
-Install from NuGet:
+Install from NuGet as a global .NET tool:
+
 ```
 dotnet tool install --global RoslynSense
 ```
 
-Update an existing global install:
+Update an existing install:
+
 ```
 dotnet tool update --global RoslynSense
 ```
 
-## Example MCP config
-For an installed tool:
+## MCP Configuration
+
 ```json
 {
     "servers": {
@@ -30,36 +31,91 @@ For an installed tool:
 }
 ```
 
-## Features
-- **Code Validation**: Analyze C# files for syntax errors, semantic issues, and compiler warnings
-- **Structured Diagnostics**: Get diagnostics in a compact, filterable markdown table format
-- **Symbol Reference Finding**: Locate all usages of a symbol across a project
-- **Go To Definition**: Navigate to a symbol's definition with code context
-- **Symbol Search**: Discover symbols by name pattern across a project
-- **Semantic Symbol Search**: Ranked, solution-oriented symbol search using name, signature, docs, and source cues
-- **File Outline**: Get a compact, token-efficient view of a file's structure
-- **Project Context Analysis**: Validate files within their project context
-- **Code Analyzer Support**: Run Microsoft recommended code analyzers
-- **MCP Resources**: Attach project structure and file outlines as context
-- **MCP Prompts**: Workflow prompts for post-edit validation and symbol investigation
-
 ## Tools
-- `ValidateFile`: Validates a C# file using Roslyn and runs code analyzers
-- `GetRoslynDiagnostics`: Returns diagnostics in a compact markdown table with severity counts and optional filtering
-- `FindUsages`: Finds all references to a symbol identified by a markup snippet
-- `GoToDefinition`: Navigates to a source definition or auto-decompiles referenced assembly symbols into reusable generated source
-- `FindSymbol`: Searches for symbol declarations by name pattern (exact, prefix, substring, camelCase)
-- `SemanticSymbolSearch`: Ranked, phrase-tolerant symbol search (see [details below](#semanticsymbolsearch))
-- `GetFileOutline`: Returns a compact tree-style outline of a file's namespaces, types, and members with line numbers
+
+### Code Analysis
+
+| Tool | Description |
+|------|-------------|
+| **ValidateFile** | Validate a C# file using Roslyn and run code analyzers. Also supports ASPX/ASCX and Razor (.razor/.cshtml) files. |
+| **GetRoslynDiagnostics** | Get diagnostics in a compact markdown table with severity counts. Accepts a severity filter (error, warning, info, hidden, all). |
+| **GetCodeActions** | List available code fixes for a diagnostic. Optionally apply a fix by index. |
+
+### Navigation
+
+| Tool | Description |
+|------|-------------|
+| **GoToDefinition** | Navigate to a symbol's definition with code context, or auto-decompile referenced assembly symbols. |
+| **FindUsages** | Find all references to a symbol across a project. Also searches Razor source-generated files and ASPX inline code. |
+| **FindSymbol** | Search for symbol declarations by name pattern (exact, prefix, substring, camelCase). |
+| **SemanticSymbolSearch** | Ranked symbol search combining name, signature, docs, and source cues. Supports phrase-style queries. |
+| **FindImplementations** | Find all implementations of an interface, abstract class, or virtual/abstract member. |
+| **FindTests** | Find test methods that reference a symbol. Returns method names, file paths, and line numbers. |
+| **GetCallHierarchy** | Show callers and/or callees of a method or property. |
+| **GetTypeHierarchy** | Show the full type hierarchy (base classes, interfaces, derived types). |
+
+### Structure
+
+| Tool | Description |
+|------|-------------|
+| **GetProjectStructure** | Get an overview of a project: target framework, references, source files, and types by namespace. |
+| **GetFileOutline** | Get a compact outline of a C# or ASPX file with namespaces, types, members, and line numbers. |
+
+### Refactoring
+
+| Tool | Description |
+|------|-------------|
+| **RenameSymbol** | Rename a symbol and all references across the project, including ASPX/ASCX files. Supports dry-run preview. |
+
+### Testing
+
+| Tool | Description |
+|------|-------------|
+| **RunTests** | Run tests in a .NET test project with optional filter expression. |
+
+### Debugging
+
+Debugging uses [netcoredbg](https://github.com/Samsung/netcoredbg), which is auto-provisioned on first use.
+
+| Tool | Description |
+|------|-------------|
+| **DebugStartTest** | Start debugging a .NET test project. Builds, launches the test host, and attaches the debugger. |
+| **DebugAttach** | Attach the debugger to a running .NET process by PID. |
+| **DebugListProcesses** | List running .NET processes that can be attached to. |
+| **DebugSetBreakpoint** | Set a breakpoint at a file and line. |
+| **DebugRemoveBreakpoint** | Remove a breakpoint by ID. |
+| **DebugContinue** | Continue execution until the next breakpoint or exit. |
+| **DebugStepIn** | Step into the next function call. |
+| **DebugStepOver** | Step over the current line. |
+| **DebugStepOut** | Step out of the current function. |
+| **DebugEvaluate** | Evaluate an expression in the current debug context. |
+| **DebugLocals** | Get local variables and their values. |
+| **DebugStackTrace** | Get the call stack. |
+| **DebugStatus** | Get debugger status, breakpoints, and current pause position. |
+| **DebugStop** | Stop the debug session and clean up. |
 
 ## Resources
-MCP resources provide stable, attachable context that clients can include in conversations.
 
-- `project-structure` (`roslyn://project-structure/{filePath}`): Returns the file/folder structure of the .NET project containing the given file. Grouped by directory with document counts.
-- `file-outline` (`roslyn://file-outline/{filePath}`): Returns a compact structural outline of a C# file (namespaces, types, members with line numbers). Same data as the `GetFileOutline` tool, available as attachable context.
+| Resource | URI Pattern | Description |
+|----------|-------------|-------------|
+| **project-structure** | `roslyn://project-structure/{filePath}` | Project file/folder structure grouped by directory. |
+| **file-outline** | `roslyn://file-outline/{filePath}` | Structural outline of a C# file (same as GetFileOutline tool). |
 
 ## Prompts
-MCP prompts provide reusable workflow templates that guide the LLM through multi-step operations.
 
-- `validate-after-edit`: Generates step-by-step instructions to validate a C# file after editing — runs diagnostics, checks the file outline, and summarizes pass/fail status. Arguments: `filePath`.
-- `investigate-symbol`: Generates a multi-step investigation workflow for a symbol — finds declarations, navigates to definitions, locates usages, and summarizes the symbol's role. Arguments: `filePath`, `symbolName`.
+| Prompt | Description |
+|--------|-------------|
+| **validate-after-edit** | Step-by-step instructions to validate a C# file after editing. |
+| **investigate-symbol** | Multi-step investigation workflow for a symbol. |
+
+## Markup Snippet Convention
+
+Many tools use a `markupSnippet` parameter with `[| |]` delimiters to identify a target symbol:
+
+```
+var x = [|Foo|].Bar();          // targets Foo
+public interface [|IService|]    // targets IService
+void [|ProcessData|](int x)     // targets ProcessData
+```
+
+The snippet is matched against the file content. Whitespace differences are tolerated.
