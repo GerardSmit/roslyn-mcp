@@ -80,6 +80,8 @@ public class DebuggerIntegrationTests : IAsyncLifetime
         // Evaluate an expression
         var evalResult = await _service.EvaluateAsync("a + b");
         _output.WriteLine($"Evaluate a+b: {evalResult}");
+        Assert.DoesNotContain("Error", evalResult);
+        Assert.Contains("8", evalResult);
 
         // Continue to completion
         var continueResult = await _service.ContinueAsync();
@@ -220,5 +222,43 @@ public class DebuggerIntegrationTests : IAsyncLifetime
         _output.WriteLine($"Start result: {startResult}");
         Assert.DoesNotContain("Error", startResult);
         Assert.Contains("continue", startResult, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task DebugFlow_EvaluateExpressions()
+    {
+        _service = new DebuggerService();
+
+        var initialBreakpoints = new[] { (CalculatorTestsFile, 12) };
+
+        var startResult = await _service.StartTestSessionAsync(
+            ProjectFile,
+            "CalculatorTests.Add_ReturnsSum",
+            initialBreakpoints);
+
+        _output.WriteLine($"Start result: {startResult}");
+        Assert.Equal(DebuggerService.DebugState.Stopped, _service.State);
+
+        // Evaluate simple variable
+        var evalA = await _service.EvaluateAsync("a");
+        _output.WriteLine($"Eval a: {evalA}");
+        Assert.DoesNotContain("Error", evalA);
+        Assert.Contains("3", evalA);
+
+        // Evaluate arithmetic expression
+        var evalExpr = await _service.EvaluateAsync("a * b");
+        _output.WriteLine($"Eval a*b: {evalExpr}");
+        Assert.DoesNotContain("Error", evalExpr);
+        Assert.Contains("15", evalExpr);
+
+        // Evaluate string expression
+        var evalStr = await _service.EvaluateAsync("a.ToString()");
+        _output.WriteLine($"Eval a.ToString(): {evalStr}");
+        Assert.DoesNotContain("Error", evalStr);
+
+        // Continue to exit
+        var continueResult = await _service.ContinueAsync();
+        Assert.True(_service.State == DebuggerService.DebugState.Exited,
+            $"Expected Exited state but got {_service.State}");
     }
 }

@@ -19,9 +19,6 @@ internal sealed partial class DebuggerService : IDisposable
     [GeneratedRegex(@"\^done,bkpt=\{number=""(\d+)""")]
     private static partial Regex BreakpointInsertedRegex();
 
-    [GeneratedRegex(@"\^done,value=""(.*)""")]
-    private static partial Regex EvaluateResultRegex();
-
     [GeneratedRegex(@"frame=\{([^}]+)\}")]
     private static partial Regex StackFrameRegex();
 
@@ -385,11 +382,16 @@ internal sealed partial class DebuggerService : IDisposable
         if (_state != DebugState.Stopped)
             return "Error: Debugger is not stopped. Cannot evaluate.";
 
-        var response = await SendCommandAsync($"-data-evaluate-expression \"{EscapeMiString(expression)}\"", cancellationToken);
+        // netcoredbg uses -var-create instead of -data-evaluate-expression
+        var varName = $"eval{_tokenCounter}";
+        var response = await SendCommandAsync($"-var-create {varName} * \"{EscapeMiString(expression)}\"", cancellationToken);
 
-        var match = EvaluateResultRegex().Match(response);
-        if (match.Success)
-            return UnescapeMiString(match.Groups[1].Value);
+        // Clean up the variable after reading the value
+        _ = SendCommandAsync($"-var-delete {varName}", cancellationToken);
+
+        var value = ExtractMiField(response, "value");
+        if (value is not null)
+            return UnescapeMiString(value);
 
         if (response.Contains("^error", StringComparison.Ordinal))
             return $"Error: {ExtractError(response)}";
