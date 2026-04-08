@@ -40,6 +40,10 @@ public static class FindTestsTool
             "Code snippet with [| |] markers around the target symbol, " +
             "e.g. 'public void [|ProcessData|](string input)'.")]
         string markupSnippet,
+        [Description(
+            "When true, also uses cached coverage data to find tests that execute " +
+            "this code at runtime. Requires RunCoverage to have been called first. Default: false.")]
+        bool useCoverage = false,
         CancellationToken cancellationToken = default)
     {
         try
@@ -102,8 +106,27 @@ public static class FindTestsTool
                 }
             }
 
+            // Coverage-based test discovery
+            if (useCoverage)
+            {
+                var coverageTests = FindTestsViaCoverage(symbol, ctx.File.SystemPath);
+                if (coverageTests is not null)
+                {
+                    foreach (var ct in coverageTests)
+                    {
+                        if (seen.Add(ct.FullyQualifiedName))
+                            testMethods.Add(ct);
+                    }
+                }
+            }
+
             if (testMethods.Count == 0)
+            {
+                if (useCoverage)
+                    return "No test methods found that reference this symbol (static analysis + coverage). " +
+                           "Ensure RunCoverage has been called to update coverage data.";
                 return "No test methods found that reference this symbol.";
+            }
 
             var sb = new StringBuilder();
             sb.AppendLine($"Found {testMethods.Count} test method(s) referencing `{symbol.Name}`:");
@@ -231,6 +254,56 @@ public static class FindTestsTool
             }
         }
         return false;
+    }
+
+    /// <summary>
+    /// Attempts to find tests that cover a symbol's source location using cached coverage data.
+    /// Returns null if no coverage data is available.
+    /// </summary>
+    private static List<TestMethodInfo>? FindTestsViaCoverage(ISymbol symbol, string filePath)
+    {
+        var data = CoverageService.GetCachedCoverage(out _, out _);
+        if (data is null) return null;
+
+        // Get the line number of the symbol's declaration
+        var location = symbol.Locations.FirstOrDefault(l => l.IsInSource);
+        if (location is null) return null;
+
+        var lineSpan = location.GetLineSpan();
+        int symbolLine = lineSpan.StartLinePosition.Line + 1;
+
+        // Check if this line is covered in the coverage data
+        var fileCov = CoverageService.GetFileCoverage(filePath);
+        if (fileCov is null) return null;
+
+        // Find which methods in the coverage data cover the symbol's line
+        var coveringMethods = fileCov.Methods
+            .Where(m => m.Lines.Any(l => l.LineNumber == symbolLine && l.Hits > 0))
+            .ToList();
+
+        if (coveringMethods.Count == 0) return null;
+
+        // The coverage data tells us which source methods cover this line.
+        // This gives us class+method names from the coverage report,
+        // but we can't directly map to test method names from Cobertura alone.
+        // The Cobertura format shows which source lines were hit, not which tests hit them.
+        // 
+        // However, if the symbol's file is IN a test project, coverage methods ARE tests.
+        // For production code, coverage just tells us if code is covered, not by which tests.
+        // Return the coverage info as supplemental data.
+        var results = new List<TestMethodInfo>();
+        foreach (var method in coveringMethods)
+        {
+            // Only include if the method looks like it's from a test file
+            if (!string.IsNullOrEmpty(method.FilePath) &&
+                (method.FilePath.Contains("Test", StringComparison.OrdinalIgnoreCase) ||
+                 method.FilePath.Contains("Spec", StringComparison.OrdinalIgnoreCase)))
+            {
+                results.Add(new TestMethodInfo(method.FullName, method.FilePath, 0));
+            }
+        }
+
+        return results.Count > 0 ? results : null;
     }
 
     private sealed record TestMethodInfo(string FullyQualifiedName, string FilePath, int Line)

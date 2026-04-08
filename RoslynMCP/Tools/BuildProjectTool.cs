@@ -47,6 +47,9 @@ public static class BuildProjectTool
                 }
             };
 
+            // Disable terminal logger to get clean parseable output
+            process.StartInfo.Environment["MSBUILDTERMINALLOGGER"] = "off";
+
             var stdout = new StringBuilder();
             var stderr = new StringBuilder();
 

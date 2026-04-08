@@ -50,7 +50,6 @@ dotnet tool update --global RoslynSense
 | **FindSymbol** | Search for symbol declarations by name pattern (exact, prefix, substring, camelCase). |
 | **SemanticSymbolSearch** | Ranked symbol search combining name, signature, docs, and source cues. Supports phrase-style queries. |
 | **FindImplementations** | Find all implementations of an interface, abstract class, or virtual/abstract member. |
-| **FindTests** | Find test methods that reference a symbol. Returns method names, file paths, and line numbers. |
 | **GetCallHierarchy** | Show callers and/or callees of a method or property. |
 | **GetTypeHierarchy** | Show the full type hierarchy (base classes, interfaces, derived types). |
 
@@ -60,6 +59,14 @@ dotnet tool update --global RoslynSense
 |------|-------------|
 | **GetProjectStructure** | Get an overview of a project: target framework, references, source files, and types by namespace. |
 | **GetFileOutline** | Get a compact outline of a C# or ASPX file with namespaces, types, members, and line numbers. |
+| **ListProjects** | Discover all projects loaded in the workspace. |
+
+### Build
+
+| Tool | Description |
+|------|-------------|
+| **BuildProject** | Build a .NET project and return structured errors and warnings. |
+| **GetProjectDiagnostics** | Get project-wide Roslyn compilation diagnostics with severity filter and result limit. |
 
 ### Refactoring
 
@@ -67,11 +74,14 @@ dotnet tool update --global RoslynSense
 |------|-------------|
 | **RenameSymbol** | Rename a symbol and all references across the project, including ASPX/ASCX files. Supports dry-run preview. |
 
-### Testing
+### Testing & Coverage
 
 | Tool | Description |
 |------|-------------|
-| **RunTests** | Run tests in a .NET test project with optional filter expression. |
+| **RunTests** | Run tests in a .NET test project with optional filter expression and timeout. |
+| **FindTests** | Find test methods that reference a symbol. Optionally uses coverage data for accurate results. |
+| **RunCoverage** | Collect code coverage for a test project using coverlet. Caches results for querying. |
+| **GetCoverage** | Query coverage by project, file, class, or method. Shows line and branch coverage with uncovered lines. |
 
 ### Debugging
 

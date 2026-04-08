@@ -64,6 +64,9 @@ public static class RunTestsTool
                 }
             };
 
+            // Disable terminal logger to get clean parseable output
+            process.StartInfo.Environment["MSBUILDTERMINALLOGGER"] = "off";
+
             var stdout = new StringBuilder();
             var stderr = new StringBuilder();
 
@@ -137,7 +140,7 @@ public static class RunTestsTool
         return null;
     }
 
-    private static string FormatTestOutput(string stdout, string stderr, int exitCode)
+    internal static string FormatTestOutput(string stdout, string stderr, int exitCode)
     {
         var sb = new StringBuilder();
 
@@ -162,6 +165,22 @@ public static class RunTestsTool
         {
             var line = rawLine.TrimEnd('\r');
 
+            // Summary lines
+            if (line.Contains("Total tests:", StringComparison.Ordinal) || line.Contains("Passed!", StringComparison.Ordinal) ||
+                line.Contains("Failed!", StringComparison.Ordinal) || line.Contains("Test Run", StringComparison.Ordinal))
+            {
+                if (inFailure && currentFailure.Length > 0)
+                {
+                    failedTests.Add(currentFailure.ToString());
+                    currentFailure.Clear();
+                    inFailure = false;
+                }
+                hasSummary = true;
+                sb.AppendLine(line.Trim());
+                continue;
+            }
+
+            // New failed test starts
             if (line.Contains("Failed ", StringComparison.Ordinal) && line.Contains('['))
             {
                 if (inFailure && currentFailure.Length > 0)
@@ -174,30 +193,25 @@ public static class RunTestsTool
 
             if (inFailure)
             {
-                if (line.Contains("Stack Trace:", StringComparison.Ordinal) || line.TrimStart().StartsWith("at ", StringComparison.Ordinal) ||
-                    line.TrimStart().StartsWith("Assert.", StringComparison.Ordinal) || line.TrimStart().StartsWith("Expected:", StringComparison.Ordinal) ||
-                    line.TrimStart().StartsWith("Actual:", StringComparison.Ordinal) || line.Contains("Message:", StringComparison.Ordinal))
+                // A "Passed" test line ends the failure block
+                if (line.Contains("Passed ", StringComparison.Ordinal) && line.Contains('['))
+                {
+                    failedTests.Add(currentFailure.ToString());
+                    currentFailure.Clear();
+                    inFailure = false;
+                    continue;
+                }
+
+                // Capture all indented or continuation lines as part of the failure
+                if (!string.IsNullOrWhiteSpace(line))
                 {
                     currentFailure.AppendLine(line.Trim());
-                    continue;
                 }
-
-                if (string.IsNullOrWhiteSpace(line) && currentFailure.Length > 0)
+                else if (currentFailure.Length > 0)
                 {
+                    // Blank line within failure — keep it as separator
                     currentFailure.AppendLine();
-                    continue;
                 }
-
-                failedTests.Add(currentFailure.ToString());
-                currentFailure.Clear();
-                inFailure = false;
-            }
-
-            if (line.Contains("Total tests:", StringComparison.Ordinal) || line.Contains("Passed!", StringComparison.Ordinal) ||
-                line.Contains("Failed!", StringComparison.Ordinal) || line.Contains("Test Run", StringComparison.Ordinal))
-            {
-                hasSummary = true;
-                sb.AppendLine(line.Trim());
             }
         }
 
