@@ -318,4 +318,107 @@ public class AspxSourceMappingServiceTests
 
         Assert.NotNull(result);
     }
+
+    // --- ASPX symbol resolution tests ---
+
+    private static Compilation CreateSystemWebCompilation()
+    {
+        // Include the System.Web stubs so the ASPX parser can resolve asp:* controls
+        var stubsText = File.ReadAllText(Path.Combine(FixturePaths.AspxProjectDir, "SystemWebStubs.cs"));
+        var stubsTree = CSharpSyntaxTree.ParseText(stubsText);
+        var runtimeDir = Path.GetDirectoryName(typeof(object).Assembly.Location)!;
+        return CSharpCompilation.Create("TestWithSystemWeb",
+            [stubsTree],
+            [
+                MetadataReference.CreateFromFile(typeof(object).Assembly.Location),
+                MetadataReference.CreateFromFile(Path.Combine(runtimeDir, "System.Runtime.dll")),
+            ],
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary,
+                assemblyIdentityComparer: DesktopAssemblyIdentityComparer.Default));
+    }
+
+    private static (AspxParseResult result, string text) ParseDefaultAspxWithSystemWeb()
+    {
+        var text = File.ReadAllText(FixturePaths.DefaultAspxFile);
+        var compilation = CreateSystemWebCompilation();
+        var result = AspxSourceMappingService.Parse(
+            FixturePaths.DefaultAspxFile, text, compilation,
+            rootDirectory: FixturePaths.AspxProjectDir);
+        return (result, text);
+    }
+
+    [Fact]
+    public void ResolveAspxSymbol_ControlTagName_ReturnsControlType()
+    {
+        var (result, text) = ParseDefaultAspxWithSystemWeb();
+        var markup = MarkupString.Parse("<[|asp:Label|] ID=\"lblTitle\"");
+
+        var symbol = AspxSourceMappingService.ResolveAspxSymbol(result, text, markup);
+
+        Assert.NotNull(symbol);
+        Assert.IsAssignableFrom<INamedTypeSymbol>(symbol);
+        Assert.Equal("Label", symbol.Name);
+        Assert.Contains("System.Web.UI.WebControls", symbol.ContainingNamespace.ToDisplayString());
+    }
+
+    [Fact]
+    public void ResolveAspxSymbol_EventHandlerValue_ReturnsCodeBehindMethod()
+    {
+        var (result, text) = ParseDefaultAspxWithSystemWeb();
+        var markup = MarkupString.Parse("OnClick=\"[|BtnSubmit_Click|]\"");
+        var symbol = AspxSourceMappingService.ResolveAspxSymbol(result, text, markup);
+
+        Assert.NotNull(symbol);
+        Assert.IsAssignableFrom<IMethodSymbol>(symbol);
+        Assert.Equal("BtnSubmit_Click", symbol.Name);
+    }
+
+    [Fact]
+    public void ResolveAspxSymbol_EventName_ReturnsEventSymbol()
+    {
+        var (result, text) = ParseDefaultAspxWithSystemWeb();
+        var markup = MarkupString.Parse("[|OnClick|]=\"BtnSubmit_Click\"");
+
+        var symbol = AspxSourceMappingService.ResolveAspxSymbol(result, text, markup);
+
+        Assert.NotNull(symbol);
+        Assert.IsAssignableFrom<IEventSymbol>(symbol);
+        Assert.Equal("Click", symbol.Name);
+    }
+
+    [Fact]
+    public void ResolveAspxSymbol_PropertyName_ReturnsPropertySymbol()
+    {
+        var (result, text) = ParseDefaultAspxWithSystemWeb();
+        var markup = MarkupString.Parse("[|Text|]=\"Submit\"");
+
+        var symbol = AspxSourceMappingService.ResolveAspxSymbol(result, text, markup);
+
+        Assert.NotNull(symbol);
+        Assert.Equal("Text", symbol.Name);
+    }
+
+    [Fact]
+    public void ResolveAspxSymbol_InheritsDirective_ReturnsPageType()
+    {
+        var (result, text) = ParseDefaultAspxWithSystemWeb();
+        var markup = MarkupString.Parse("Inherits=\"[|AspxProject.DefaultPage|]\"");
+
+        var symbol = AspxSourceMappingService.ResolveAspxSymbol(result, text, markup);
+
+        Assert.NotNull(symbol);
+        Assert.IsAssignableFrom<INamedTypeSymbol>(symbol);
+        Assert.Equal("DefaultPage", symbol.Name);
+    }
+
+    [Fact]
+    public void ResolveAspxSymbol_NoMatch_ReturnsNull()
+    {
+        var (result, text) = ParseDefaultAspxWithSystemWeb();
+        var markup = MarkupString.Parse("[|NonExistentThing|]");
+
+        var symbol = AspxSourceMappingService.ResolveAspxSymbol(result, text, markup);
+
+        Assert.Null(symbol);
+    }
 }

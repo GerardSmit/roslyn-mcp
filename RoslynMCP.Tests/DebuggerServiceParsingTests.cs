@@ -474,9 +474,10 @@ public class DebuggerServiceParsingTests
     {
         using var service = new DebuggerService();
 
-        var result = await service.SetBreakpointAsync("test.cs", 10);
+        var (message, bpId) = await service.SetBreakpointAsync("test.cs", 10);
 
-        Assert.Contains("No active debug session", result);
+        Assert.Contains("No active debug session", message);
+        Assert.Null(bpId);
     }
 
     [Fact]

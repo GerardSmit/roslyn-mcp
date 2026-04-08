@@ -45,6 +45,11 @@ internal static class AspxSourceMappingService
         IEnumerable<KeyValuePair<string, string>>? namespaces = null,
         string? rootDirectory = null)
     {
+        // Auto-inject default ASP.NET namespace mappings when the compilation
+        // references System.Web. In traditional ASP.NET, the 'asp' prefix is
+        // implicitly available mapping to System.Web.UI.WebControls etc.
+        namespaces = EnsureDefaultAspNetNamespaces(compilation, namespaces);
+
         var rootNode = RootNode.Parse(
             out var diagnostics,
             compilation,
@@ -55,7 +60,7 @@ internal static class AspxSourceMappingService
             generateHash: false);
 
         if (rootNode is null)
-            return new AspxParseResult(filePath, [], [], [], [], [], diagnostics);
+            return new AspxParseResult(filePath, [], [], [], [], [], diagnostics, null);
 
         var directives = new List<AspxDirectiveInfo>();
         var controls = new List<AspxControlInfo>();
@@ -72,7 +77,7 @@ internal static class AspxSourceMappingService
             errors.Add(d.GetMessage());
         }
 
-        return new AspxParseResult(filePath, directives, controls, expressions, codeBlocks, errors, diagnostics);
+        return new AspxParseResult(filePath, directives, controls, expressions, codeBlocks, errors, diagnostics, rootNode);
     }
 
     /// <summary>
@@ -188,6 +193,133 @@ internal static class AspxSourceMappingService
         return null;
     }
 
+    /// <summary>
+    /// Resolves a symbol from an ASPX file given a markup snippet with [| |] delimiters.
+    /// Supports navigating to:
+    /// <list type="bullet">
+    ///   <item>Control types — e.g. <c>&lt;[|asp:LinkButton|]&gt;</c> → the control class</item>
+    ///   <item>Event handlers — e.g. <c>OnClick="[|MyHandler|]"</c> → the code-behind method</item>
+    ///   <item>Event names — e.g. <c>[|OnClick|]="MyHandler"</c> → the event on the control</item>
+    ///   <item>Properties — e.g. <c>[|Text|]="Hello"</c> → the property on the control</item>
+    /// </list>
+    /// </summary>
+    public static ISymbol? ResolveAspxSymbol(
+        AspxParseResult parseResult,
+        string fileText,
+        MarkupString markup)
+    {
+        if (parseResult.ParseTree is null)
+            return null;
+
+        // Find the marked text position in the ASPX source
+        var matches = MarkupSymbolResolver.FindAllOccurrences(fileText, markup.PlainText);
+        if (matches.Count != 1)
+            return null;
+
+        var match = matches[0];
+        int markedStart = MarkupSymbolResolver.MapSnippetOffsetToFile(
+            fileText, match, markup.PlainText, markup.SpanStart);
+        int markedEnd = MarkupSymbolResolver.MapSnippetOffsetToFile(
+            fileText, match, markup.PlainText, markup.SpanStart + markup.SpanLength);
+        string markedText = markup.MarkedText;
+
+        // Walk all control nodes looking for a match
+        foreach (var node in parseResult.ParseTree.AllChildren)
+        {
+            if (node is not ControlNode control)
+                continue;
+
+            // Check if the marked text falls within the control's tag name
+            var tagRange = control.StartTag.ElementRange;
+            if (RangeContainsOffset(tagRange, markedStart, markedEnd))
+                return control.ControlType;
+
+            // Skip controls that don't contain the marked position
+            // Use StartTag.Range which covers the entire opening tag (not just the tag name)
+            var fullTagRange = control.StartTag.Range;
+            if (!RangeContainsOffset(fullTagRange, markedStart, markedEnd)
+                && (control.EndTag is null || !RangeContainsOffset(control.EndTag.Range, markedStart, markedEnd)))
+                continue;
+
+            // Check event handler values (e.g., OnClick="[|MyHandler|]")
+            foreach (var evt in control.Events)
+            {
+                if (RangeContainsOffset(evt.Range, markedStart, markedEnd))
+                    return evt.Method;
+            }
+
+            // Check property values
+            foreach (var prop in control.Properties)
+            {
+                if (RangeContainsOffset(prop.Range, markedStart, markedEnd))
+                    return prop.Member.Symbol;
+            }
+
+            // Check raw attributes (unprocessed by the parser)
+            foreach (var (key, value) in control.Attributes)
+            {
+                if (RangeContainsOffset(key.Range, markedStart, markedEnd))
+                {
+                    var keyStr = key.Value;
+                    if (keyStr.StartsWith("On", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var eventSymbol = control.ControlType?.GetDeep<IEventSymbol>(keyStr.Substring(2));
+                        if (eventSymbol != null)
+                            return eventSymbol;
+                    }
+
+                    var member = control.ControlType?.GetMemberDeep(keyStr);
+                    if (member != null)
+                        return member.Symbol;
+                }
+            }
+
+            // Semantic fallback: match marked text against event/property names
+            // when the attribute name offset isn't stored (events are consumed by the parser)
+            if (markedText.StartsWith("On", StringComparison.OrdinalIgnoreCase))
+            {
+                var eventName = markedText.Substring(2);
+                foreach (var evt in control.Events)
+                {
+                    if (string.Equals(evt.EventName, eventName, StringComparison.OrdinalIgnoreCase))
+                        return evt.Event;
+                }
+
+                // Also check on the control type directly
+                var eventSymbol = control.ControlType?.GetDeep<IEventSymbol>(eventName);
+                if (eventSymbol != null)
+                    return eventSymbol;
+            }
+
+            // Match by event handler method name
+            foreach (var evt in control.Events)
+            {
+                if (string.Equals(evt.MethodName, markedText, StringComparison.OrdinalIgnoreCase))
+                    return evt.Method;
+            }
+
+            // Match by property name
+            var memberResult = control.ControlType?.GetMemberDeep(markedText);
+            if (memberResult != null)
+                return memberResult.Symbol;
+        }
+
+        // Check if marked text matches the page base type (Inherits directive)
+        if (parseResult.ParseTree.Inherits is { } inherits)
+        {
+            var inheritsName = inherits.ToDisplayString();
+            if (inheritsName.Contains(markedText, StringComparison.OrdinalIgnoreCase))
+                return inherits;
+        }
+
+        return null;
+    }
+
+    private static bool RangeContainsOffset(TokenRange range, int startOffset, int endOffset)
+    {
+        return range.Start.Offset <= startOffset && range.End.Offset >= endOffset;
+    }
+
     private static void CollectDirectives(RootNode root, List<AspxDirectiveInfo> directives)
     {
         foreach (var directive in root.Directives)
@@ -246,6 +378,42 @@ internal static class AspxSourceMappingService
                     break;
             }
         }
+    }
+
+    /// <summary>
+    /// Default tag-prefix → namespace mappings that ASP.NET implicitly registers.
+    /// These are always available in traditional ASP.NET WebForms projects.
+    /// </summary>
+    private static readonly KeyValuePair<string, string>[] s_defaultAspNetNamespaces =
+    [
+        new("asp", "System.Web.UI.WebControls"),
+        new("asp", "System.Web.UI"),
+        new("asp", "System.Web.UI.WebControls.WebParts"),
+    ];
+
+    /// <summary>
+    /// Ensures the default ASP.NET tag-prefix namespace mappings (e.g. <c>asp → System.Web.UI.WebControls</c>)
+    /// are included when the compilation references <c>System.Web</c>.
+    /// </summary>
+    private static IEnumerable<KeyValuePair<string, string>>? EnsureDefaultAspNetNamespaces(
+        Compilation compilation,
+        IEnumerable<KeyValuePair<string, string>>? namespaces)
+    {
+        // Check for System.Web as a referenced assembly (real .NET Framework projects)
+        var hasSystemWeb = compilation.ReferencedAssemblyNames
+            .Any(a => string.Equals(a.Name, "System.Web", StringComparison.OrdinalIgnoreCase));
+
+        // Also check for the namespace via type lookup (covers source-defined stubs and WebFormsCore)
+        if (!hasSystemWeb)
+            hasSystemWeb = compilation.GetTypeByMetadataName("System.Web.UI.Control") is not null;
+
+        if (!hasSystemWeb)
+            return namespaces;
+
+        if (namespaces is null)
+            return s_defaultAspNetNamespaces;
+
+        return s_defaultAspNetNamespaces.Concat(namespaces);
     }
 
     /// <summary>
@@ -381,7 +549,8 @@ internal record AspxParseResult(
     List<AspxExpressionInfo> Expressions,
     List<AspxCodeBlockInfo> CodeBlocks,
     List<string> Errors,
-    ImmutableArray<ReportedDiagnostic> RawDiagnostics);
+    ImmutableArray<ReportedDiagnostic> RawDiagnostics,
+    RootNode? ParseTree);
 
 /// <summary>A parsed <%@ ... %> directive.</summary>
 internal record AspxDirectiveInfo(string Type, int Line, Dictionary<string, string> Attributes);

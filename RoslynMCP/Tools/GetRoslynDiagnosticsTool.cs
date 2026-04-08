@@ -7,52 +7,50 @@ using RoslynMCP.Services;
 namespace RoslynMCP.Tools;
 
 /// <summary>
-/// Retrieves Roslyn diagnostics for a C# file in a compact, structured markdown table.
-/// Complements <see cref="ValidateFileTool"/> with a more token-efficient output format.
+/// Unified diagnostics tool that handles C# files (single-file and project-wide),
+/// ASPX/ASCX files, and Razor files. Replaces the former GetRoslynDiagnosticsTool,
+/// GetProjectDiagnosticsTool, and ValidateFileTool.
 /// </summary>
 [McpServerToolType]
 public static class GetRoslynDiagnosticsTool
 {
-    /// <summary>
-    /// Returns diagnostics for a C# file as a structured markdown table with severity
-    /// counts and optional severity filtering.
-    /// </summary>
     [McpServerTool, Description(
-        "Get Roslyn diagnostics (errors, warnings, info) for a C# file in a compact " +
-        "markdown table. For ASPX or Razor files, use ValidateFile instead. " +
-        "More structured and token-efficient than ValidateFile. " +
+        "Get Roslyn diagnostics (errors, warnings) for a C# file, ASPX/ASCX file, " +
+        "Razor file, or entire project. Pass a source file path for file-level diagnostics, " +
+        "or a .csproj path for project-wide diagnostics. " +
+        "Also supports ASPX/ASCX and Razor (.razor/.cshtml) files. " +
+        "Supports multiple files separated by semicolons. " +
         "Accepts a severity filter to narrow results.")]
     public static async Task<string> GetRoslynDiagnostics(
-        [Description("Path to the C# file to diagnose.")] string filePath,
+        [Description("Path to the C# file, ASPX/ASCX file, Razor file, or .csproj project. " +
+                     "Separate multiple paths with semicolons.")] string filePath,
         [Description("Severity filter: error, warning, info, hidden, or all (default: all).")] string severityFilter = "all",
         [Description("Run analyzers (default: true).")] bool runAnalyzers = true,
+        [Description("Maximum number of diagnostics to return. Default: 50.")] int maxResults = 50,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            if (!TryParseSeverityFilter(severityFilter, out DiagnosticSeverity? filter))
-                return $"Error: Invalid severity filter '{severityFilter}'. Use: error, warning, info, hidden, or all.";
+            if (string.IsNullOrWhiteSpace(filePath))
+                return "Error: filePath cannot be empty.";
 
-            var errors = new StringBuilder();
-            var fileCtx = await ToolHelper.ResolveFileAsync(filePath, errors, cancellationToken);
-            if (fileCtx is null)
-                return errors.ToString();
+            var paths = filePath.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-            if (fileCtx.Document is null)
-                return "Error: File not found in project.";
+            if (paths.Length == 1)
+                return await GetSingleFileDiagnostics(paths[0], severityFilter, runAnalyzers, maxResults, cancellationToken);
 
-            var diagnostics = await CollectDiagnosticsAsync(
-                fileCtx.Document, fileCtx.Project, fileCtx.SystemPath, runAnalyzers, cancellationToken);
+            // Multi-file mode
+            var sb = new StringBuilder();
+            foreach (var path in paths)
+            {
+                if (sb.Length > 0)
+                    sb.AppendLine();
 
-            if (filter is not null)
-                diagnostics = diagnostics.Where(d => d.Severity == filter.Value).ToList();
-
-            return FormatDiagnostics(diagnostics, fileCtx.SystemPath, fileCtx.Project.FilePath!);
+                sb.Append(await GetSingleFileDiagnostics(path, severityFilter, runAnalyzers, maxResults, cancellationToken));
+            }
+            return sb.ToString();
         }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
+        catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
             Console.Error.WriteLine($"[GetRoslynDiagnostics] Unhandled error: {ex}");
@@ -60,14 +58,91 @@ public static class GetRoslynDiagnosticsTool
         }
     }
 
-    private static bool TryParseSeverityFilter(string filter, out DiagnosticSeverity? result) =>
-        PathHelper.TryParseSeverityFilter(filter, out result);
+    private static async Task<string> GetSingleFileDiagnostics(
+        string filePath, string severityFilter, bool runAnalyzers, int maxResults,
+        CancellationToken cancellationToken)
+    {
+        string systemPath = PathHelper.NormalizePath(filePath);
+
+        // ASPX/ASCX files
+        if (AspxSourceMappingService.IsAspxFile(systemPath))
+            return await ValidateAspxFileAsync(systemPath, cancellationToken);
+
+        // Razor files
+        if (RazorSourceMappingService.IsRazorFile(systemPath))
+            return await ValidateRazorFileAsync(systemPath, cancellationToken);
+
+        // Project-wide diagnostics (.csproj path)
+        if (systemPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
+            return await GetProjectDiagnosticsAsync(systemPath, severityFilter, maxResults, cancellationToken);
+
+        // Single C# file diagnostics
+        return await GetFileDiagnosticsAsync(systemPath, severityFilter, runAnalyzers, maxResults, cancellationToken);
+    }
 
     /// <summary>
-    /// Collects all diagnostics for the target file from compilation and (optionally)
+    /// File-level diagnostics for a single C# file.
+    /// </summary>
+    private static async Task<string> GetFileDiagnosticsAsync(
+        string systemPath, string severityFilter, bool runAnalyzers, int maxResults,
+        CancellationToken cancellationToken)
+    {
+        if (!PathHelper.TryParseSeverityFilter(severityFilter, out DiagnosticSeverity? filter))
+            return $"Error: Invalid severity filter '{severityFilter}'. Use: error, warning, info, hidden, or all.";
+
+        var errors = new StringBuilder();
+        var fileCtx = await ToolHelper.ResolveFileAsync(systemPath, errors, cancellationToken);
+        if (fileCtx is null)
+            return errors.ToString();
+
+        if (fileCtx.Document is null)
+            return "Error: File not found in project.";
+
+        var diagnostics = await CollectFileDiagnosticsAsync(
+            fileCtx.Document, fileCtx.Project, fileCtx.SystemPath, runAnalyzers, cancellationToken);
+
+        if (filter is not null)
+            diagnostics = diagnostics.Where(d => d.Severity == filter.Value).ToList();
+
+        return FormatFileDiagnostics(diagnostics, fileCtx.SystemPath, fileCtx.Project.FilePath!, maxResults);
+    }
+
+    /// <summary>
+    /// Project-wide diagnostics for all files in a .csproj.
+    /// </summary>
+    private static async Task<string> GetProjectDiagnosticsAsync(
+        string csprojPath, string severityFilter, int maxResults,
+        CancellationToken cancellationToken)
+    {
+        if (!File.Exists(csprojPath))
+            return $"Error: Project file '{csprojPath}' not found.";
+
+        if (!PathHelper.TryParseSeverityFilter(severityFilter, out DiagnosticSeverity? filter))
+            return $"Error: Invalid severity filter '{severityFilter}'. Use: error, warning, info, or all.";
+
+        var (_, project) = await WorkspaceService.GetOrOpenProjectAsync(
+            csprojPath, cancellationToken: cancellationToken);
+
+        var compilation = await project.GetCompilationAsync(cancellationToken);
+        if (compilation is null)
+            return "Error: Unable to produce compilation for project.";
+
+        var diagnostics = compilation.GetDiagnostics()
+            .Where(d => d.Location.IsInSource)
+            .Where(d => d.Severity != DiagnosticSeverity.Hidden)
+            .ToList();
+
+        if (filter is not null)
+            diagnostics = diagnostics.Where(d => d.Severity == filter.Value).ToList();
+
+        return FormatProjectDiagnostics(diagnostics, project, csprojPath, maxResults);
+    }
+
+    /// <summary>
+    /// Collects all diagnostics for a single file from compilation and (optionally)
     /// analyzers, deduplicating by diagnostic ID and source span.
     /// </summary>
-    private static async Task<List<Diagnostic>> CollectDiagnosticsAsync(
+    private static async Task<List<Diagnostic>> CollectFileDiagnosticsAsync(
         Document document, Project project, string filePath, bool runAnalyzers,
         CancellationToken cancellationToken)
     {
@@ -77,8 +152,6 @@ public static class GetRoslynDiagnosticsTool
         if (compilation is null)
             return all;
 
-        // Compilation diagnostics include syntax + semantic for all trees;
-        // filter to the target file.
         all.AddRange(compilation.GetDiagnostics()
             .Where(d => d.Location.SourceTree is not null &&
                         string.Equals(d.Location.SourceTree.FilePath, filePath,
@@ -98,8 +171,8 @@ public static class GetRoslynDiagnosticsTool
             .ToList();
     }
 
-    private static string FormatDiagnostics(
-        List<Diagnostic> diagnostics, string filePath, string projectPath)
+    private static string FormatFileDiagnostics(
+        List<Diagnostic> diagnostics, string filePath, string projectPath, int maxResults)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"# Diagnostics: {Path.GetFileName(filePath)}");
@@ -120,26 +193,211 @@ public static class GetRoslynDiagnosticsTool
             return sb.ToString();
         }
 
+        var ordered = diagnostics.Take(maxResults).ToList();
+
         sb.AppendLine("| Severity | ID | Line:Col | Message |");
         sb.AppendLine("|----------|------|----------|---------|");
 
-        foreach (var d in diagnostics)
+        foreach (var d in ordered)
         {
             var span = d.Location.GetLineSpan();
             int line = span.StartLinePosition.Line + 1;
             int col = span.StartLinePosition.Character + 1;
-            string severity = d.Severity switch
-            {
-                DiagnosticSeverity.Error => "Error",
-                DiagnosticSeverity.Warning => "Warning",
-                DiagnosticSeverity.Info => "Info",
-                DiagnosticSeverity.Hidden => "Hidden",
-                _ => d.Severity.ToString(),
-            };
-
+            string severity = FormatSeverity(d.Severity);
             sb.AppendLine($"| {severity} | {d.Id} | {line}:{col} | {MarkdownHelper.EscapeTableCell(d.GetMessage())} |");
         }
 
+        if (diagnostics.Count > maxResults)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"_Showing first {maxResults} of {diagnostics.Count} diagnostics. Use `maxResults` to see more._");
+        }
+
         return sb.ToString();
+    }
+
+    private static string FormatProjectDiagnostics(
+        List<Diagnostic> diagnostics, Project project, string projectPath, int maxResults)
+    {
+        var sb = new StringBuilder();
+        string? projectDir = Path.GetDirectoryName(projectPath);
+
+        sb.AppendLine($"# Project Diagnostics: {project.Name}");
+        sb.AppendLine();
+
+        int errors = diagnostics.Count(d => d.Severity == DiagnosticSeverity.Error);
+        int warnings = diagnostics.Count(d => d.Severity == DiagnosticSeverity.Warning);
+        int info = diagnostics.Count(d => d.Severity == DiagnosticSeverity.Info);
+
+        sb.AppendLine($"**Errors**: {errors} | **Warnings**: {warnings} | **Info**: {info}");
+        sb.AppendLine();
+
+        if (diagnostics.Count == 0)
+        {
+            sb.AppendLine("No diagnostics found. Project compiles cleanly.");
+            return sb.ToString();
+        }
+
+        var byFile = diagnostics
+            .GroupBy(d => d.Location.SourceTree?.FilePath ?? "unknown")
+            .OrderByDescending(g => g.Count(d => d.Severity == DiagnosticSeverity.Error))
+            .ThenByDescending(g => g.Count())
+            .ToList();
+
+        sb.AppendLine($"**Files with issues**: {byFile.Count}");
+        sb.AppendLine();
+
+        var ordered = diagnostics
+            .OrderBy(d => d.Severity)
+            .ThenBy(d => d.Location.SourceTree?.FilePath)
+            .ThenBy(d => d.Location.SourceSpan.Start)
+            .Take(maxResults)
+            .ToList();
+
+        sb.AppendLine("| Severity | ID | File | Line | Message |");
+        sb.AppendLine("|----------|------|------|------|---------|");
+
+        foreach (var d in ordered)
+        {
+            var span = d.Location.GetLineSpan();
+            int line = span.StartLinePosition.Line + 1;
+            string severity = FormatSeverity(d.Severity);
+            string file = projectDir is not null
+                ? Path.GetRelativePath(projectDir, span.Path)
+                : Path.GetFileName(span.Path);
+
+            sb.AppendLine(
+                $"| {severity} | {d.Id} | {MarkdownHelper.EscapeTableCell(file)} | {line} | {MarkdownHelper.EscapeTableCell(d.GetMessage())} |");
+        }
+
+        if (diagnostics.Count > maxResults)
+        {
+            sb.AppendLine();
+            sb.AppendLine($"_Showing first {maxResults} of {diagnostics.Count} diagnostics. Use `maxResults` to see more._");
+        }
+
+        return sb.ToString();
+    }
+
+    private static string FormatSeverity(DiagnosticSeverity severity) => severity switch
+    {
+        DiagnosticSeverity.Error => "Error",
+        DiagnosticSeverity.Warning => "Warning",
+        DiagnosticSeverity.Info => "Info",
+        DiagnosticSeverity.Hidden => "Hidden",
+        _ => severity.ToString(),
+    };
+
+    // --- ASPX / Razor validation (moved from ValidateFileTool) ---
+
+    private static async Task<string> ValidateAspxFileAsync(
+        string filePath, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(filePath))
+            return $"Error: File {filePath} does not exist.";
+
+        string? projectPath = await FindProjectForNonCSharpFileAsync(filePath, cancellationToken);
+        if (string.IsNullOrEmpty(projectPath))
+            return "Error: Couldn't find a project containing this ASPX file.";
+
+        var (_, project) = await WorkspaceService.GetOrOpenProjectAsync(
+            projectPath, cancellationToken: cancellationToken);
+        var compilation = await project.GetCompilationAsync(cancellationToken);
+        if (compilation is null)
+            return "Error: Unable to produce compilation for project.";
+
+        var projectDir = Path.GetDirectoryName(projectPath);
+        var webConfigNamespaces = projectDir is not null
+            ? AspxSourceMappingService.LoadWebConfigNamespaces(projectDir)
+            : default;
+
+        var text = await File.ReadAllTextAsync(filePath, cancellationToken);
+        var result = AspxSourceMappingService.Parse(filePath, text, compilation,
+            namespaces: webConfigNamespaces.IsDefaultOrEmpty ? null : webConfigNamespaces,
+            rootDirectory: projectDir);
+        return AspxSourceMappingService.FormatOutline(result);
+    }
+
+    private static async Task<string> ValidateRazorFileAsync(
+        string filePath, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(filePath))
+            return $"Error: File {filePath} does not exist.";
+
+        string? projectPath = await FindProjectForNonCSharpFileAsync(filePath, cancellationToken);
+        if (string.IsNullOrEmpty(projectPath))
+            return "Error: Couldn't find a project containing this Razor file.";
+
+        var (_, project) = await WorkspaceService.GetOrOpenProjectAsync(
+            projectPath, cancellationToken: cancellationToken);
+
+        var sourceMap = await ProjectIndexCacheService.GetRazorSourceMapAsync(project, cancellationToken);
+
+        var compilation = await project.GetCompilationAsync(cancellationToken);
+        if (compilation is null)
+            return "Error: Unable to produce compilation for project.";
+
+        var sb = new StringBuilder();
+        sb.AppendLine($"# Razor Validation: {Path.GetFileName(filePath)}");
+        sb.AppendLine();
+
+        var allDiagnostics = compilation.GetDiagnostics();
+        var mappedDiags = new List<RazorMappedDiagnostic>();
+
+        foreach (var diag in allDiagnostics)
+        {
+            var mapped = RazorSourceMappingService.MapDiagnostic(sourceMap, diag);
+            if (mapped.MappedLocation is not null &&
+                string.Equals(
+                    Path.GetFullPath(mapped.MappedLocation.RazorFilePath),
+                    Path.GetFullPath(filePath),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                mappedDiags.Add(mapped);
+            }
+        }
+
+        if (mappedDiags.Count == 0)
+        {
+            sb.AppendLine("No diagnostics found for this Razor file.");
+        }
+        else
+        {
+            int errors = mappedDiags.Count(d => d.Diagnostic.Severity == DiagnosticSeverity.Error);
+            int warnings = mappedDiags.Count(d => d.Diagnostic.Severity == DiagnosticSeverity.Warning);
+            sb.AppendLine($"**Errors**: {errors} | **Warnings**: {warnings}");
+            sb.AppendLine();
+            sb.AppendLine("| Severity | ID | Razor Line | Message |");
+            sb.AppendLine("|----------|------|------------|---------|");
+
+            foreach (var mapped in mappedDiags.OrderBy(d => d.MappedLocation!.Line))
+            {
+                var d = mapped.Diagnostic;
+                string severity = FormatSeverity(d.Severity);
+                sb.AppendLine(
+                    $"| {severity} | {d.Id} | {mapped.MappedLocation!.Line} | {MarkdownHelper.EscapeTableCell(d.GetMessage())} |");
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private static async Task<string?> FindProjectForNonCSharpFileAsync(
+        string filePath, CancellationToken cancellationToken)
+    {
+        string? projectPath = await WorkspaceService.FindContainingProjectAsync(filePath, cancellationToken);
+        if (!string.IsNullOrEmpty(projectPath))
+            return projectPath;
+
+        var dir = new DirectoryInfo(Path.GetDirectoryName(filePath)!);
+        while (dir is not null)
+        {
+            var csproj = dir.GetFiles("*.csproj").FirstOrDefault();
+            if (csproj is not null)
+                return csproj.FullName;
+            dir = dir.Parent;
+        }
+
+        return null;
     }
 }

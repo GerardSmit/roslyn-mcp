@@ -303,10 +303,10 @@ internal sealed partial class DebuggerService : IDisposable
         return null;
     }
 
-    public async Task<string> SetBreakpointAsync(string filePath, int line, string? condition = null, CancellationToken cancellationToken = default)
+    public async Task<(string Message, int? BreakpointId)> SetBreakpointAsync(string filePath, int line, string? condition = null, CancellationToken cancellationToken = default)
     {
         if (_state == DebugState.NotStarted)
-            return "Error: No active debug session.";
+            return ("Error: No active debug session.", null);
 
         var normalizedPath = PathHelper.NormalizePath(filePath);
         var escapedPath = EscapeMiString(normalizedPath);
@@ -320,13 +320,13 @@ internal sealed partial class DebuggerService : IDisposable
         {
             _breakpoints[bpNumber] = new BreakpointInfo(bpNumber, normalizedPath, line);
             var conditionNote = !string.IsNullOrWhiteSpace(condition) ? $" (condition: {condition})" : "";
-            return $"Breakpoint #{bpNumber} set at {Path.GetFileName(normalizedPath)}:{line}{conditionNote}";
+            return ($"Breakpoint #{bpNumber} set at {Path.GetFileName(normalizedPath)}:{line}{conditionNote}", bpNumber);
         }
 
         if (response.Contains("^error", StringComparison.Ordinal))
-            return $"Error setting breakpoint: {ExtractError(response)}";
+            return ($"Error setting breakpoint: {ExtractError(response)}", null);
 
-        return $"Breakpoint set at {Path.GetFileName(normalizedPath)}:{line}";
+        return ($"Breakpoint set at {Path.GetFileName(normalizedPath)}:{line}", null);
     }
 
     public async Task<string> RemoveBreakpointAsync(int breakpointId, CancellationToken cancellationToken = default)

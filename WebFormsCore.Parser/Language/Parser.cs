@@ -18,7 +18,19 @@ public class Parser
         "LinePragmas",
         "MasterPageFile",
         "Src",
-        "Strict"
+        "Strict",
+        "AutoEventWireup",
+        "Async",
+        "CompilerOptions",
+        "Debug",
+        "Explicit",
+        "ResponseEncoding",
+        "WarningLevel",
+        "TargetSchema",
+        "CompilationMode",
+        "ValidateRequest",
+        "EnableViewState",
+        "EnableEventValidation",
     };
 
     private readonly Compilation _compilation;
@@ -343,8 +355,9 @@ public class Parser
             }
             else
             {
-                Root.Inherits = _compilation.GetType("WebFormsCore.UI.Page");
-                Root.Namespace = "WebFormsCore.UI";
+                Root.Inherits = _compilation.GetType("WebFormsCore.UI.Page")
+                                ?? _compilation.GetType("System.Web.UI.Page");
+                Root.Namespace = Root.Inherits?.ContainingNamespace.ToDisplayString() ?? "WebFormsCore.UI";
             }
         }
 
@@ -596,7 +609,8 @@ public class Parser
                 controlType ??= GetControlType(ns?.Text, name.Text);
             }
 
-            controlType ??= _compilation.GetType("WebFormsCore.UI.HtmlGenericControl");
+            controlType ??= _compilation.GetType("WebFormsCore.UI.HtmlGenericControl")
+                           ?? _compilation.GetType("System.Web.UI.HtmlControls.HtmlGenericControl");
 
             if (controlType == null)
             {
@@ -961,15 +975,15 @@ public class Parser
 
             return name.Value switch
             {
-                "form" or "FORM" => _compilation.GetTypeByMetadataName("WebFormsCore.UI.HtmlControls.HtmlForm"),
-                "body" or "BODY" => _compilation.GetTypeByMetadataName("WebFormsCore.UI.HtmlControls.HtmlBody"),
-                "title" or "TITLE" => _compilation.GetTypeByMetadataName("WebFormsCore.UI.HtmlControls.HtmlTitle"),
-                "head" or "HEAD" => _compilation.GetTypeByMetadataName("WebFormsCore.UI.HtmlControls.HtmlHead"),
-                "link" or "LINK" => _compilation.GetTypeByMetadataName("WebFormsCore.UI.HtmlControls.HtmlLink"),
-                "script" or "SCRIPT" => _compilation.GetTypeByMetadataName("WebFormsCore.UI.HtmlControls.HtmlScript"),
-                "style" or "STYLE" => _compilation.GetTypeByMetadataName("WebFormsCore.UI.HtmlControls.HtmlStyle"),
-                "img" or "IMG" => _compilation.GetTypeByMetadataName("WebFormsCore.UI.HtmlControls.HtmlImage"),
-                _ => _compilation.GetTypeByMetadataName("WebFormsCore.UI.HtmlControls.HtmlGenericControl")
+                "form" or "FORM" => ResolveHtmlControl("HtmlForm"),
+                "body" or "BODY" => ResolveHtmlControl("HtmlBody") ?? ResolveHtmlControl("HtmlGenericControl"),
+                "title" or "TITLE" => ResolveHtmlControl("HtmlTitle"),
+                "head" or "HEAD" => ResolveHtmlControl("HtmlHead"),
+                "link" or "LINK" => ResolveHtmlControl("HtmlLink"),
+                "script" or "SCRIPT" => ResolveHtmlControl("HtmlScript") ?? ResolveHtmlControl("HtmlGenericControl"),
+                "style" or "STYLE" => ResolveHtmlControl("HtmlStyle") ?? ResolveHtmlControl("HtmlGenericControl"),
+                "img" or "IMG" => ResolveHtmlControl("HtmlImage"),
+                _ => ResolveHtmlControl("HtmlGenericControl")
             };
         }
 
@@ -993,7 +1007,8 @@ public class Parser
             return null;
         }
 
-        type = _compilation.GetType("WebFormsCore.UI", "Control");
+        type = _compilation.GetType("WebFormsCore.UI", "Control")
+              ?? _compilation.GetType("System.Web.UI", "Control");
 
         Diagnostics.Add(
             ReportedDiagnostic.Create(
@@ -1003,5 +1018,11 @@ public class Parser
                 elementNs));
 
         return type;
+    }
+
+    private INamedTypeSymbol? ResolveHtmlControl(string typeName)
+    {
+        return _compilation.GetTypeByMetadataName($"WebFormsCore.UI.HtmlControls.{typeName}")
+               ?? _compilation.GetTypeByMetadataName($"System.Web.UI.HtmlControls.{typeName}");
     }
 }

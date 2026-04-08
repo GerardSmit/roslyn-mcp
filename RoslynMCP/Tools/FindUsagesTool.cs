@@ -52,10 +52,56 @@ public static class FindUsagesTool
             // Build ASPX index for searching inline code references
             var aspxIndex = await ProjectIndexCacheService.GetAspxIndexAsync(ctx.Project, cancellationToken);
 
+            // Search referencing projects for cross-project usages
+            var crossProjectRefs = new List<(string ProjectName, List<ReferenceLocation> Locations)>();
+            if (ctx.Project.FilePath is not null)
+            {
+                var referencingProjects = WorkspaceService.FindReferencingProjects(ctx.Project.FilePath);
+                foreach (var refProjectPath in referencingProjects)
+                {
+                    try
+                    {
+                        var (refWorkspace, refProject) = await WorkspaceService.GetOrOpenProjectAsync(
+                            refProjectPath, diagnosticWriter: TextWriter.Null, cancellationToken: cancellationToken);
+
+                        var refSolution = refWorkspace.CurrentSolution;
+                        var refDoc = WorkspaceService.FindDocumentInProject(refProject, ctx.SystemPath)
+                            ?? FindDocumentInSolution(refSolution, ctx.SystemPath);
+
+                        if (refDoc is null) continue;
+
+                        var refModel = await refDoc.GetSemanticModelAsync(cancellationToken);
+                        var refRoot = await refDoc.GetSyntaxRootAsync(cancellationToken);
+                        if (refModel is null || refRoot is null) continue;
+
+                        var originalLocation = symbol.Locations.FirstOrDefault(l => l.IsInSource);
+                        if (originalLocation is null) continue;
+
+                        var node = refRoot.FindNode(originalLocation.SourceSpan);
+                        var refSymbol = refModel.GetDeclaredSymbol(node, cancellationToken)
+                            ?? refModel.GetSymbolInfo(node, cancellationToken).Symbol;
+
+                        if (refSymbol is null) continue;
+
+                        var refResults = await SymbolFinder.FindReferencesAsync(refSymbol, refSolution, cancellationToken);
+                        var locations = refResults.SelectMany(r => r.Locations).ToList();
+                        if (locations.Count > 0)
+                        {
+                            crossProjectRefs.Add((Path.GetFileNameWithoutExtension(refProjectPath), locations));
+                        }
+                    }
+                    catch (OperationCanceledException) { throw; }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine($"[FindUsages] Error searching referencing project '{refProjectPath}': {ex.Message}");
+                    }
+                }
+            }
+
             string searchSummary = $"Markup target: `{ctx.Markup.MarkedText}`";
             return await FormatResultsAsync(
                 symbol, references, ctx.SystemPath, searchSummary, ctx.Project.FilePath!,
-                razorSourceMap, aspxIndex, maxResults, cancellationToken);
+                razorSourceMap, aspxIndex, crossProjectRefs, maxResults, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -66,6 +112,16 @@ public static class FindUsagesTool
             Console.Error.WriteLine($"[FindUsages] Unhandled error: {ex}");
             return $"Error finding usages: {ex.Message}";
         }
+    }
+
+    private static Document? FindDocumentInSolution(Solution solution, string filePath)
+    {
+        foreach (var project in solution.Projects)
+        {
+            var doc = WorkspaceService.FindDocumentInProject(project, filePath);
+            if (doc is not null) return doc;
+        }
+        return null;
     }
 
     /// <summary>
@@ -79,6 +135,7 @@ public static class FindUsagesTool
         string projectPath,
         RazorSourceMap razorSourceMap,
         AspxProjectIndex aspxIndex,
+        List<(string ProjectName, List<ReferenceLocation> Locations)> crossProjectRefs,
         int maxResults,
         CancellationToken cancellationToken)
     {
@@ -140,6 +197,35 @@ public static class FindUsagesTool
             results.AppendLine();
         }
 
+        // Append cross-project references
+        int crossProjectCount = crossProjectRefs.Sum(r => r.Locations.Count);
+        if (crossProjectRefs.Count > 0)
+        {
+            results.AppendLine("## Cross-Project References");
+            results.AppendLine(
+                $"Found {crossProjectCount} reference(s) in {crossProjectRefs.Count} referencing project(s).");
+            results.AppendLine();
+
+            foreach (var (projectName, locations) in crossProjectRefs)
+            {
+                results.AppendLine($"### {projectName}");
+                foreach (var location in locations.Take(maxResults - referenceCount + 1))
+                {
+                    if (referenceCount > maxResults)
+                    {
+                        results.AppendLine($"_Truncated. Use `maxResults` to see more._");
+                        break;
+                    }
+                    var lineSpan = location.Location.GetLineSpan();
+                    var path = location.Document.FilePath ?? lineSpan.Path;
+                    results.AppendLine(
+                        $"- {path}:{lineSpan.StartLinePosition.Line + 1}:{lineSpan.StartLinePosition.Character + 1}");
+                    referenceCount++;
+                }
+                results.AppendLine();
+            }
+        }
+
         // Append ASPX references
         var aspxRefs = AspxSourceMappingService.FindSymbolReferences(aspxIndex, symbol.Name);
         if (aspxRefs.Count > 0)
@@ -170,6 +256,8 @@ public static class FindUsagesTool
         {
             $"{totalLocations} C# reference(s) across {refList.Count} symbol definition(s)"
         };
+        if (crossProjectCount > 0)
+            summaryParts.Add($"{crossProjectCount} cross-project references");
         if (aspxCount > 0)
             summaryParts.Add($"{aspxCount} ASPX references");
 

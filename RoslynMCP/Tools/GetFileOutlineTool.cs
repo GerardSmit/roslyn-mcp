@@ -23,9 +23,10 @@ public static class GetFileOutlineTool
     [McpServerTool, Description(
         "Get a compact outline of a C# or ASPX file showing namespaces, types, and member " +
         "signatures with line numbers. For ASPX files, shows directives, controls, expressions, " +
-        "and code blocks. Useful for understanding file structure without reading the full source.")]
+        "and code blocks. Useful for understanding file structure without reading the full source. " +
+        "Supports multiple files separated by semicolons.")]
     public static async Task<string> GetFileOutline(
-        [Description("Path to the C# or ASPX file.")] string filePath,
+        [Description("Path to the C# or ASPX file. Separate multiple paths with semicolons.")] string filePath,
         CancellationToken cancellationToken = default)
     {
         try
@@ -33,35 +34,20 @@ public static class GetFileOutlineTool
             if (string.IsNullOrWhiteSpace(filePath))
                 return "Error: File path cannot be empty.";
 
-            string systemPath = PathHelper.NormalizePath(filePath);
+            var paths = filePath.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-            if (!File.Exists(systemPath))
-                return $"Error: File {systemPath} does not exist.";
+            if (paths.Length == 1)
+                return await GetSingleFileOutline(paths[0], cancellationToken);
 
-            // ASPX files: parse and show directive/control/expression outline
-            if (AspxSourceMappingService.IsAspxFile(systemPath))
-                return await GetAspxOutlineAsync(systemPath, cancellationToken);
-
-            var errors = new StringBuilder();
-            var fileCtx = await ToolHelper.ResolveFileAsync(filePath, errors, cancellationToken);
-            if (fileCtx is null)
-                return errors.ToString();
-
-            if (fileCtx.Document is null)
-                return "Error: File not found in project.";
-
-            var syntaxTree = await fileCtx.Document.GetSyntaxTreeAsync(cancellationToken);
-            if (syntaxTree is null)
-                return "Error: Unable to obtain syntax tree.";
-
-            var root = await syntaxTree.GetRootAsync(cancellationToken);
+            // Multi-file mode: concatenate outlines
             var sb = new StringBuilder();
-            sb.AppendLine($"# Outline: {Path.GetFileName(fileCtx.SystemPath)}");
-            sb.AppendLine();
-            sb.AppendLine("```");
-            AppendOutline(sb, root, depth: 0);
-            sb.AppendLine("```");
+            foreach (var path in paths)
+            {
+                if (sb.Length > 0)
+                    sb.AppendLine();
 
+                sb.Append(await GetSingleFileOutline(path, cancellationToken));
+            }
             return sb.ToString();
         }
         catch (OperationCanceledException)
@@ -73,6 +59,40 @@ public static class GetFileOutlineTool
             Console.Error.WriteLine($"[GetFileOutline] Unhandled error: {ex}");
             return $"Error: {ex.Message}";
         }
+    }
+
+    private static async Task<string> GetSingleFileOutline(string filePath, CancellationToken cancellationToken)
+    {
+        string systemPath = PathHelper.NormalizePath(filePath);
+
+        if (!File.Exists(systemPath))
+            return $"Error: File {systemPath} does not exist.";
+
+        // ASPX files: parse and show directive/control/expression outline
+        if (AspxSourceMappingService.IsAspxFile(systemPath))
+            return await GetAspxOutlineAsync(systemPath, cancellationToken);
+
+        var errors = new StringBuilder();
+        var fileCtx = await ToolHelper.ResolveFileAsync(filePath, errors, cancellationToken);
+        if (fileCtx is null)
+            return errors.ToString();
+
+        if (fileCtx.Document is null)
+            return "Error: File not found in project.";
+
+        var syntaxTree = await fileCtx.Document.GetSyntaxTreeAsync(cancellationToken);
+        if (syntaxTree is null)
+            return "Error: Unable to obtain syntax tree.";
+
+        var root = await syntaxTree.GetRootAsync(cancellationToken);
+        var sb = new StringBuilder();
+        sb.AppendLine($"# Outline: {Path.GetFileName(fileCtx.SystemPath)}");
+        sb.AppendLine();
+        sb.AppendLine("```");
+        AppendOutline(sb, root, depth: 0);
+        sb.AppendLine("```");
+
+        return sb.ToString();
     }
 
     private static void AppendOutline(StringBuilder sb, SyntaxNode node, int depth)

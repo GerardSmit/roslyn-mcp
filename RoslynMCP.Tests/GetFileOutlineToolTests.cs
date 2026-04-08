@@ -197,4 +197,14 @@ public class GetFileOutlineToolTests
 
         Assert.Contains("ASPX File", result, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public async Task WhenMultipleFilesProvidedThenReturnsAllOutlines()
+    {
+        var result = await GetFileOutlineTool.GetFileOutline(
+            filePath: $"{FixturePaths.CalculatorFile};{FixturePaths.WarningsFile}");
+
+        Assert.Contains("Calculator.cs", result);
+        Assert.Contains("Warnings.cs", result);
+    }
 }

@@ -152,10 +152,7 @@ public static class CoverageService
     {
         lock (Lock)
         {
-            if (_cachedData is null) return null;
-
-            var normalized = Path.GetFullPath(filePath);
-            return _cachedData.Files.GetValueOrDefault(normalized);
+            return GetFileCoverageInternal(filePath);
         }
     }
 
@@ -207,6 +204,13 @@ public static class CoverageService
             }
             return results;
         }
+    }
+
+    private static FileCoverage? GetFileCoverageInternal(string filePath)
+    {
+        if (_cachedData is null) return null;
+        var normalized = Path.GetFullPath(filePath);
+        return _cachedData.Files.GetValueOrDefault(normalized);
     }
 
     private static CoverageData ParseCoberturaXml(string path)

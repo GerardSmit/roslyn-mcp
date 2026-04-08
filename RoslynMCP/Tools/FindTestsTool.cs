@@ -265,41 +265,56 @@ public static class FindTestsTool
         var data = CoverageService.GetCachedCoverage(out _, out _);
         if (data is null) return null;
 
-        // Get the line number of the symbol's declaration
+        // Get the full span of the symbol (declaration through end of body)
         var location = symbol.Locations.FirstOrDefault(l => l.IsInSource);
         if (location is null) return null;
 
         var lineSpan = location.GetLineSpan();
-        int symbolLine = lineSpan.StartLinePosition.Line + 1;
+        int startLine = lineSpan.StartLinePosition.Line + 1;
+        int endLine = lineSpan.EndLinePosition.Line + 1;
 
-        // Check if this line is covered in the coverage data
+        // For methods, try to get the full body span
+        if (symbol is IMethodSymbol)
+        {
+            foreach (var syntaxRef in symbol.DeclaringSyntaxReferences)
+            {
+                var syntax = syntaxRef.GetSyntax();
+                var fullSpan = syntax.GetLocation().GetLineSpan();
+                startLine = Math.Min(startLine, fullSpan.StartLinePosition.Line + 1);
+                endLine = Math.Max(endLine, fullSpan.EndLinePosition.Line + 1);
+            }
+        }
+
         var fileCov = CoverageService.GetFileCoverage(filePath);
         if (fileCov is null) return null;
 
-        // Find which methods in the coverage data cover the symbol's line
+        // Find methods in coverage data whose lines overlap with the symbol's span
+        var coveredLines = fileCov.Lines
+            .Where(kv => kv.Key >= startLine && kv.Key <= endLine && kv.Value.Hits > 0)
+            .Select(kv => kv.Key)
+            .ToHashSet();
+
+        if (coveredLines.Count == 0) return null;
+
+        // Find which coverage methods contain these covered lines
         var coveringMethods = fileCov.Methods
-            .Where(m => m.Lines.Any(l => l.LineNumber == symbolLine && l.Hits > 0))
+            .Where(m => m.Lines.Any(l => coveredLines.Contains(l.LineNumber)))
             .ToList();
 
         if (coveringMethods.Count == 0) return null;
 
-        // The coverage data tells us which source methods cover this line.
-        // This gives us class+method names from the coverage report,
-        // but we can't directly map to test method names from Cobertura alone.
-        // The Cobertura format shows which source lines were hit, not which tests hit them.
-        // 
-        // However, if the symbol's file is IN a test project, coverage methods ARE tests.
-        // For production code, coverage just tells us if code is covered, not by which tests.
-        // Return the coverage info as supplemental data.
+        // For test files, the covering methods ARE the test methods.
+        // For production code, the covering methods are the production methods that contain
+        // the covered lines — Cobertura doesn't track which tests hit them.
         var results = new List<TestMethodInfo>();
         foreach (var method in coveringMethods)
         {
-            // Only include if the method looks like it's from a test file
             if (!string.IsNullOrEmpty(method.FilePath) &&
                 (method.FilePath.Contains("Test", StringComparison.OrdinalIgnoreCase) ||
                  method.FilePath.Contains("Spec", StringComparison.OrdinalIgnoreCase)))
             {
-                results.Add(new TestMethodInfo(method.FullName, method.FilePath, 0));
+                var firstLine = method.Lines.FirstOrDefault()?.LineNumber ?? 0;
+                results.Add(new TestMethodInfo(method.FullName, method.FilePath, firstLine));
             }
         }
 

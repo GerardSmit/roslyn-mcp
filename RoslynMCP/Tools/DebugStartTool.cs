@@ -45,43 +45,29 @@ public static class DebugStartTool
     }
 
     /// <summary>
-    /// Attaches the debugger to a running .NET process.
+    /// Attaches the debugger to a running .NET process. When pid is omitted, lists
+    /// available .NET processes instead.
     /// </summary>
     [McpServerTool, Description(
         "Attach the netcoredbg debugger to a running .NET process by PID. " +
-        "Use DebugListProcesses to discover .NET processes. " +
+        "Omit the PID to list available .NET processes. " +
         "Requires netcoredbg to be installed and on PATH.")]
     public static async Task<string> DebugAttach(
-        [Description("Process ID to attach to.")]
-        int pid,
+        [Description("Process ID to attach to. Omit to list available .NET processes.")]
+        int pid = 0,
         [Description("Optional initial breakpoints as 'file:line' pairs, semicolon-separated.")]
         string? initialBreakpoints = null,
         CancellationToken cancellationToken = default)
     {
         try
         {
+            if (pid <= 0)
+                return await DebuggerService.ListDotNetProcessesAsync(cancellationToken);
+
             DebugSessionManager.DisposeSession();
             var session = DebugSessionManager.CreateSession();
             var breakpoints = ParseBreakpoints(initialBreakpoints);
             return await session.AttachToProcessAsync(pid, breakpoints, cancellationToken);
-        }
-        catch (Exception ex)
-        {
-            return $"Error: {ex.Message}";
-        }
-    }
-
-    /// <summary>
-    /// Lists running .NET processes that can be attached to.
-    /// </summary>
-    [McpServerTool, Description(
-        "List running .NET processes that can be attached to with DebugAttach.")]
-    public static async Task<string> DebugListProcesses(
-        CancellationToken cancellationToken = default)
-    {
-        try
-        {
-            return await DebuggerService.ListDotNetProcessesAsync(cancellationToken);
         }
         catch (Exception ex)
         {
