@@ -961,7 +961,7 @@ internal sealed partial class DebuggerService : IDisposable
             var file = ExtractMiField(content, "file") ?? "";
             var line = ExtractMiField(content, "line") ?? "?";
 
-            var fileDisplay = string.IsNullOrEmpty(file) ? "" : $" at {Path.GetFileName(file)}:{line}";
+            var fileDisplay = string.IsNullOrEmpty(file) ? "" : $" at {Path.GetFileName(file.Replace('\\', '/'))}:{line}";
             sb.AppendLine($"  #{level} {func}{fileDisplay}");
         }
 
