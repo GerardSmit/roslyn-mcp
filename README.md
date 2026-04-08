@@ -1,4 +1,4 @@
-# Roslyn Code Analysis MCP Server
+# RoslynSense
 
 ## Overview
 A Model Context Protocol (MCP) server that provides C# code analysis capabilities using the Roslyn compiler platform. This tool helps validate C# files, find symbol references, and perform static code analysis within the context of a .NET project.
@@ -9,12 +9,12 @@ Inspired by [egorpavlikhin/roslyn-mcp](https://github.com/egorpavlikhin/roslyn-m
 
 Install from NuGet:
 ```
-dotnet tool install --global roslyn-mcp
+dotnet tool install --global RoslynSense
 ```
 
 Update an existing global install:
 ```
-dotnet tool update --global roslyn-mcp
+dotnet tool update --global RoslynSense
 ```
 
 ## Example MCP config
@@ -22,9 +22,9 @@ For an installed tool:
 ```json
 {
     "servers": {
-        "RoslynMCP": {
+        "RoslynSense": {
             "type": "stdio",
-            "command": "roslyn-mcp"
+            "command": "roslyn-sense"
         }
     }
 }

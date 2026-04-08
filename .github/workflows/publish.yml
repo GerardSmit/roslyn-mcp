@@ -61,10 +61,10 @@ jobs:
           fi
 
           echo "package_version=$package_version" >> "$GITHUB_OUTPUT"
-          echo "Publishing roslyn-mcp version $package_version"
+          echo "Publishing RoslynSense version $package_version"
 
-      - name: Pack roslyn-mcp
+      - name: Pack RoslynSense
         run: dotnet pack RoslynMCP/RoslynMCP.csproj -c Release -o artifacts --no-build --nologo /p:ContinuousIntegrationBuild=true /p:Version=${{ steps.version.outputs.package_version }} /p:PackageVersion=${{ steps.version.outputs.package_version }}
 
       - name: Publish to NuGet
-        run: dotnet nuget push "artifacts/roslyn-mcp.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ secrets.NUGET_API_KEY }}" --skip-duplicate
+        run: dotnet nuget push "artifacts/RoslynSense.*.nupkg" --source https://api.nuget.org/v3/index.json --api-key "${{ secrets.NUGET_API_KEY }}" --skip-duplicate

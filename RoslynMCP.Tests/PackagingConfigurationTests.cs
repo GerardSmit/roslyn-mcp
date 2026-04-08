@@ -12,8 +12,8 @@ public class PackagingConfigurationTests
 
         Assert.Equal("net10.0", GetPropertyValue(project, "TargetFramework"));
         Assert.Equal("true", GetPropertyValue(project, "PackAsTool"));
-        Assert.Equal("roslyn-mcp", GetPropertyValue(project, "ToolCommandName"));
-        Assert.Equal("roslyn-mcp", GetPropertyValue(project, "PackageId"));
+        Assert.Equal("roslyn-sense", GetPropertyValue(project, "ToolCommandName"));
+        Assert.Equal("RoslynSense", GetPropertyValue(project, "PackageId"));
         Assert.Equal("0.1.0", GetPropertyValue(project, "VersionPrefix"));
         Assert.Equal("README.md", GetPropertyValue(project, "PackageReadmeFile"));
     }

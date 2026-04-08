@@ -29,7 +29,7 @@ public class WorkflowConfigurationTests
         Assert.Contains("package_version=\"$major.$minor.$((patch + commit_count))\"", content, StringComparison.Ordinal);
         Assert.Contains("dotnet pack RoslynMCP/RoslynMCP.csproj", content, StringComparison.Ordinal);
         Assert.Contains("/p:PackageVersion=${{ steps.version.outputs.package_version }}", content, StringComparison.Ordinal);
-        Assert.Contains("roslyn-mcp", content, StringComparison.Ordinal);
+        Assert.Contains("RoslynSense", content, StringComparison.Ordinal);
         Assert.Contains("dotnet nuget push", content, StringComparison.Ordinal);
         Assert.Contains("NUGET_API_KEY", content, StringComparison.Ordinal);
         Assert.DoesNotContain("GITHUB_RUN_NUMBER", content, StringComparison.Ordinal);
