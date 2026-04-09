@@ -186,9 +186,15 @@ public static class GetFileOutlineTool
 
     private static void AppendEntry(StringBuilder sb, int depth, string text, SyntaxNode node)
     {
-        int line = node.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+        var lineSpan = node.GetLocation().GetLineSpan();
+        int startLine = lineSpan.StartLinePosition.Line + 1;
+        int endLine = lineSpan.EndLinePosition.Line + 1;
         string prefix = string.Concat(Enumerable.Repeat(Indent, depth));
-        sb.AppendLine($"{line,4}: {prefix}{text}");
+
+        if (endLine > startLine)
+            sb.AppendLine($"{startLine,4}-{endLine,-4}: {prefix}{text}");
+        else
+            sb.AppendLine($"{startLine,4}: {prefix}{text}");
     }
 
     private static string FormatTypeDeclaration(TypeDeclarationSyntax type)
