@@ -31,6 +31,7 @@ public static class FindUsagesTool
         int maxResults = 100,
         [Description("Approximate line number near the target snippet. Used to pick the closest match when the snippet appears multiple times.")]
         int? hintLine = null,
+        TableFormatter? fmt = null,
         CancellationToken cancellationToken = default)
     {
         try
@@ -103,7 +104,7 @@ public static class FindUsagesTool
             string searchSummary = $"Markup target: `{ctx.Markup.MarkedText}`";
             return await FormatResultsAsync(
                 symbol, references, ctx.SystemPath, searchSummary, ctx.Project.FilePath!,
-                razorSourceMap, aspxIndex, crossProjectRefs, maxResults, cancellationToken);
+                razorSourceMap, aspxIndex, crossProjectRefs, maxResults, fmt, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -139,39 +140,39 @@ public static class FindUsagesTool
         AspxProjectIndex aspxIndex,
         List<(string ProjectName, List<ReferenceLocation> Locations)> crossProjectRefs,
         int maxResults,
+        TableFormatter? fmt,
         CancellationToken cancellationToken)
     {
+        fmt ??= new TableFormatter();
         var refList = references.ToList();
         var results = new StringBuilder();
 
-        results.AppendLine("# Symbol Usage Analysis");
-        results.AppendLine();
-        results.AppendLine("## Search Information");
-        results.AppendLine($"- **File**: {filePath}");
-        results.AppendLine($"- **Position**: {searchSummary}");
-        results.AppendLine($"- **Project**: {Path.GetFileName(projectPath)}");
-        results.AppendLine();
+        fmt.AppendHeader(results, "Symbol Usage Analysis");
 
-        AppendSymbolDetails(results, symbol);
+        fmt.AppendHeader(results, "Search Information", level: 2);
+        fmt.AppendField(results, "File", filePath);
+        fmt.AppendField(results, "Position", searchSummary);
+        fmt.AppendField(results, "Project", Path.GetFileName(projectPath));
+        fmt.AppendSeparator(results);
+
+        AppendSymbolDetails(results, symbol, fmt);
 
         int totalLocations = refList.Sum(r => r.Locations.Count());
 
-        results.AppendLine("## References");
-        results.AppendLine(
-            $"Found {totalLocations} reference(s) across {refList.Count} symbol definition(s).");
-        results.AppendLine();
+        fmt.AppendHeader(results, "References", level: 2);
+        fmt.AppendField(results, "Found", $"{totalLocations} reference(s) across {refList.Count} symbol definition(s)");
+        fmt.AppendSeparator(results);
 
         int referenceCount = 1;
         foreach (var reference in refList)
         {
             if (referenceCount > maxResults)
             {
-                results.AppendLine($"_Showing first {maxResults} of {totalLocations} references. Use `maxResults` to see more._");
-                results.AppendLine();
+                fmt.AppendTruncation(results, maxResults, totalLocations);
                 break;
             }
 
-            results.AppendLine($"### Reference Definition: {reference.Definition.ToDisplayString()}");
+            fmt.AppendHeader(results, $"Reference Definition: {reference.Definition.ToDisplayString()}", level: 3);
 
             foreach (var location in reference.Locations)
             {
@@ -186,6 +187,7 @@ public static class FindUsagesTool
                     referenceCount,
                     includeCodeContext: referenceCount <= MaxCodeContextReferences,
                     mappedRazor,
+                    fmt,
                     cancellationToken);
                 referenceCount++;
             }
@@ -193,38 +195,36 @@ public static class FindUsagesTool
 
         if (totalLocations > MaxCodeContextReferences)
         {
-            results.AppendLine(
-                $"_Code context shown for the first {MaxCodeContextReferences} references; " +
-                $"omitted for the remaining {totalLocations - MaxCodeContextReferences}._");
-            results.AppendLine();
+            fmt.AppendHints(results,
+                $"Code context shown for the first {MaxCodeContextReferences} references; " +
+                $"omitted for the remaining {totalLocations - MaxCodeContextReferences}.");
         }
 
         // Append cross-project references
         int crossProjectCount = crossProjectRefs.Sum(r => r.Locations.Count);
         if (crossProjectRefs.Count > 0)
         {
-            results.AppendLine("## Cross-Project References");
-            results.AppendLine(
-                $"Found {crossProjectCount} reference(s) in {crossProjectRefs.Count} referencing project(s).");
-            results.AppendLine();
+            fmt.AppendHeader(results, "Cross-Project References", level: 2);
+            fmt.AppendField(results, "Found", $"{crossProjectCount} reference(s) in {crossProjectRefs.Count} referencing project(s)");
+            fmt.AppendSeparator(results);
 
             foreach (var (projectName, locations) in crossProjectRefs)
             {
-                results.AppendLine($"### {projectName}");
+                var rows = new List<string[]>();
                 foreach (var location in locations.Take(maxResults - referenceCount + 1))
                 {
                     if (referenceCount > maxResults)
-                    {
-                        results.AppendLine($"_Truncated. Use `maxResults` to see more._");
                         break;
-                    }
                     var lineSpan = location.Location.GetLineSpan();
                     var path = location.Document.FilePath ?? lineSpan.Path;
-                    results.AppendLine(
-                        $"- {path}:{lineSpan.StartLinePosition.Line + 1}:{lineSpan.StartLinePosition.Character + 1}");
+                    rows.Add([path, $"{lineSpan.StartLinePosition.Line + 1}", $"{lineSpan.StartLinePosition.Character + 1}"]);
                     referenceCount++;
                 }
-                results.AppendLine();
+                fmt.AppendTable(results, projectName, ["File", "Line", "Column"], rows);
+                if (referenceCount > maxResults)
+                {
+                    fmt.AppendTruncation(results, maxResults, totalLocations + crossProjectCount);
+                }
             }
         }
 
@@ -232,28 +232,28 @@ public static class FindUsagesTool
         var aspxRefs = AspxSourceMappingService.FindSymbolReferences(aspxIndex, symbol.Name);
         if (aspxRefs.Count > 0)
         {
-            results.AppendLine("## ASPX References");
-            results.AppendLine(
-                $"Found {aspxRefs.Count} potential references in ASPX/ASCX files.");
-            results.AppendLine();
+            fmt.AppendHeader(results, "ASPX References", level: 2);
+            fmt.AppendField(results, "Found", $"{aspxRefs.Count} potential references in ASPX/ASCX files");
+            fmt.AppendSeparator(results);
 
+            var aspxRows = new List<string[]>();
             foreach (var aspxRef in aspxRefs)
             {
                 var locType = aspxRef.LocationType == AspxCodeLocationType.Expression
                     ? "Expression" : "Code Block";
-                results.AppendLine(
-                    $"- **{Path.GetFileName(aspxRef.FilePath)}**:{aspxRef.Line} ({locType})");
                 var snippet = aspxRef.CodeSnippet.Length > 80
                     ? aspxRef.CodeSnippet[..77] + "..."
                     : aspxRef.CodeSnippet;
-                results.AppendLine($"  `{snippet}`");
+                aspxRows.Add([Path.GetFileName(aspxRef.FilePath), $"{aspxRef.Line}", locType, snippet]);
             }
-
-            results.AppendLine();
+            fmt.AppendTable(results, "ASPX", ["File", "Line", "Type", "Snippet"], aspxRows);
         }
 
-        results.AppendLine("## Summary");
+        fmt.AppendHeader(results, "Summary", level: 2);
         int aspxCount = aspxRefs.Count;
+        int totalRefCount = totalLocations + crossProjectCount + aspxCount;
+        fmt.AppendField(results, "Symbol", $"`{symbol.Name}` ({symbol.Kind})");
+        fmt.AppendField(results, "Total reference count", totalRefCount);
         var summaryParts = new List<string>
         {
             $"{totalLocations} C# reference(s) across {refList.Count} symbol definition(s)"
@@ -262,9 +262,10 @@ public static class FindUsagesTool
             summaryParts.Add($"{crossProjectCount} cross-project references");
         if (aspxCount > 0)
             summaryParts.Add($"{aspxCount} ASPX references");
+        fmt.AppendField(results, "Breakdown", string.Join(", ", summaryParts));
+        fmt.AppendSeparator(results);
 
-        results.AppendLine(
-            $"Symbol `{symbol.Name}` of type `{symbol.Kind}` has {string.Join(", ", summaryParts)}.");
+        fmt.AppendHints(results, "Use GoToDefinition on a reference to see its context");
 
         return results.ToString();
     }
@@ -291,58 +292,59 @@ public static class FindUsagesTool
         return RazorSourceMappingService.MapGeneratedToRazor(sourceMap, docPath, generatedLine);
     }
 
-    private static void AppendSymbolDetails(StringBuilder results, ISymbol symbol)
+    private static void AppendSymbolDetails(StringBuilder results, ISymbol symbol, TableFormatter fmt)
     {
-        results.AppendLine("## Symbol Details");
-        results.AppendLine($"- **Name**: {symbol.Name}");
-        results.AppendLine($"- **Kind**: {symbol.Kind}");
-        results.AppendLine($"- **Full Name**: {symbol.ToDisplayString()}");
+        fmt.AppendHeader(results, "Symbol Details", level: 2);
+        fmt.AppendField(results, "Name", symbol.Name);
+        fmt.AppendField(results, "Kind", symbol.Kind);
+        fmt.AppendField(results, "Full Name", symbol.ToDisplayString());
 
         if (symbol.ContainingType != null)
-            results.AppendLine($"- **Containing Type**: {symbol.ContainingType.ToDisplayString()}");
+            fmt.AppendField(results, "Containing Type", symbol.ContainingType.ToDisplayString());
 
         if (symbol.ContainingNamespace is { IsGlobalNamespace: false })
-            results.AppendLine($"- **Namespace**: {symbol.ContainingNamespace.ToDisplayString()}");
+            fmt.AppendField(results, "Namespace", symbol.ContainingNamespace.ToDisplayString());
 
-        results.AppendLine($"- **Accessibility**: {symbol.DeclaredAccessibility}");
+        fmt.AppendField(results, "Accessibility", symbol.DeclaredAccessibility);
 
         switch (symbol)
         {
             case IMethodSymbol method:
-                results.AppendLine($"- **Return Type**: {method.ReturnType.ToDisplayString()}");
-                results.AppendLine($"- **Is Extension Method**: {method.IsExtensionMethod}");
-                results.AppendLine($"- **Parameter Count**: {method.Parameters.Length}");
+                fmt.AppendField(results, "Return Type", method.ReturnType.ToDisplayString());
+                fmt.AppendField(results, "Is Extension Method", method.IsExtensionMethod);
+                fmt.AppendField(results, "Parameter Count", method.Parameters.Length);
                 break;
             case IPropertySymbol property:
-                results.AppendLine($"- **Property Type**: {property.Type.ToDisplayString()}");
-                results.AppendLine($"- **Has Getter**: {property.GetMethod != null}");
-                results.AppendLine($"- **Has Setter**: {property.SetMethod != null}");
+                fmt.AppendField(results, "Property Type", property.Type.ToDisplayString());
+                fmt.AppendField(results, "Has Getter", property.GetMethod != null);
+                fmt.AppendField(results, "Has Setter", property.SetMethod != null);
                 break;
             case IFieldSymbol field:
-                results.AppendLine($"- **Field Type**: {field.Type.ToDisplayString()}");
-                results.AppendLine($"- **Is Const**: {field.IsConst}");
-                results.AppendLine($"- **Is Static**: {field.IsStatic}");
+                fmt.AppendField(results, "Field Type", field.Type.ToDisplayString());
+                fmt.AppendField(results, "Is Const", field.IsConst);
+                fmt.AppendField(results, "Is Static", field.IsStatic);
                 break;
             case IEventSymbol evt:
-                results.AppendLine($"- **Event Type**: {evt.Type.ToDisplayString()}");
+                fmt.AppendField(results, "Event Type", evt.Type.ToDisplayString());
                 break;
             case IParameterSymbol param:
-                results.AppendLine($"- **Parameter Type**: {param.Type.ToDisplayString()}");
-                results.AppendLine($"- **Is Optional**: {param.IsOptional}");
+                fmt.AppendField(results, "Parameter Type", param.Type.ToDisplayString());
+                fmt.AppendField(results, "Is Optional", param.IsOptional);
                 break;
             case ILocalSymbol local:
-                results.AppendLine($"- **Local Type**: {local.Type.ToDisplayString()}");
-                results.AppendLine($"- **Is Const**: {local.IsConst}");
+                fmt.AppendField(results, "Local Type", local.Type.ToDisplayString());
+                fmt.AppendField(results, "Is Const", local.IsConst);
                 break;
         }
 
-        results.AppendLine();
+        fmt.AppendSeparator(results);
     }
 
     private static async Task AppendReferenceLocationAsync(
         StringBuilder results, ReferenceLocation location, int referenceCount,
         bool includeCodeContext,
         RazorMappedLocation? razorMapping,
+        TableFormatter fmt,
         CancellationToken cancellationToken)
     {
         var linePosition = location.Location.GetLineSpan();
@@ -351,17 +353,15 @@ public static class FindUsagesTool
         string locationPath = location.Document.FilePath ?? linePosition.Path;
         string formattedLocation = $"{locationPath}:{refLine}:{refColumn}";
 
-        results.AppendLine($"#### Reference {referenceCount}: {formattedLocation}");
+        fmt.AppendHeader(results, $"Reference {referenceCount}: {formattedLocation}", level: 4);
 
         if (razorMapping is not null)
         {
-            results.AppendLine(
-                $"  ↳ **Razor source**: {razorMapping.RazorFilePath}:{razorMapping.Line}");
+            fmt.AppendField(results, "Razor source", $"{razorMapping.RazorFilePath}:{razorMapping.Line}");
         }
 
         if (!includeCodeContext)
         {
-            results.AppendLine();
             return;
         }
 
