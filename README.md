@@ -1,6 +1,6 @@
 # RoslynSense
 
-A Model Context Protocol (MCP) server that provides C# code analysis, navigation, refactoring, testing, and debugging capabilities using the Roslyn compiler platform.
+A Model Context Protocol (MCP) server that provides C# code analysis, navigation, refactoring, testing, and debugging capabilities using the Roslyn compiler platform. Includes extensible support for WebForms (ASPX/ASCX) and Razor (.razor/.cshtml) files.
 
 Inspired by [egorpavlikhin/roslyn-mcp](https://github.com/egorpavlikhin/roslyn-mcp).
 
@@ -31,21 +31,41 @@ dotnet tool update --global RoslynSense
 }
 ```
 
+### Command-Line Options
+
+| Flag | Description |
+|------|-------------|
+| `--no-webforms` | Disable WebForms (ASPX/ASCX) support. |
+| `--no-razor` | Disable Razor (.razor/.cshtml) support. |
+
+Example configuration with Razor disabled:
+
+```json
+{
+    "servers": {
+        "RoslynSense": {
+            "type": "stdio",
+            "command": "roslyn-sense",
+            "args": ["--no-razor"]
+        }
+    }
+}
+```
+
 ## Tools
 
 ### Code Analysis
 
 | Tool | Description |
 |------|-------------|
-| **ValidateFile** | Validate a C# file using Roslyn and run code analyzers. Also supports ASPX/ASCX and Razor (.razor/.cshtml) files. |
-| **GetRoslynDiagnostics** | Get diagnostics in a compact markdown table with severity counts. Accepts a severity filter (error, warning, info, hidden, all). |
-| **GetCodeActions** | List available code fixes for a diagnostic. Optionally apply a fix by index. |
+| **GetRoslynDiagnostics** | Get diagnostics for a C# file, ASPX/ASCX file, Razor file, or entire project. Returns a compact markdown table with severity counts. Accepts a severity filter (error, warning, info, hidden, all). Supports multiple files separated by semicolons. |
+| **GetCodeActions** | List available code fixes for a diagnostic. Optionally apply a fix by index. Also discovers refactorings (Extract Method, Introduce Variable, etc.). |
 
 ### Navigation
 
 | Tool | Description |
 |------|-------------|
-| **GoToDefinition** | Navigate to a symbol's definition with code context, or auto-decompile referenced assembly symbols. |
+| **GoToDefinition** | Navigate to a symbol's definition with code context, or auto-decompile referenced assembly symbols. Works with C#, ASPX, and Razor files. |
 | **FindUsages** | Find all references to a symbol across a project. Also searches Razor source-generated files and ASPX inline code. |
 | **FindSymbol** | Search for symbol declarations by name pattern (exact, prefix, substring, camelCase). |
 | **SemanticSymbolSearch** | Ranked symbol search combining name, signature, docs, and source cues. Supports phrase-style queries. |
@@ -58,28 +78,28 @@ dotnet tool update --global RoslynSense
 | Tool | Description |
 |------|-------------|
 | **GetProjectStructure** | Get an overview of a project: target framework, references, source files, and types by namespace. |
-| **GetFileOutline** | Get a compact outline of a C# or ASPX file with namespaces, types, members, and line numbers. |
+| **GetFileOutline** | Get a compact outline of a C#, ASPX, or Razor file with namespaces, types, members, and line ranges (start-end for multi-line members). Supports multiple files separated by semicolons. |
 | **ListProjects** | Discover all projects loaded in the workspace. |
 
 ### Build
 
 | Tool | Description |
 |------|-------------|
-| **BuildProject** | Build a .NET project and return structured errors and warnings. |
-| **GetProjectDiagnostics** | Get project-wide Roslyn compilation diagnostics with severity filter and result limit. |
+| **BuildProject** | Build a .NET project or solution and return structured errors and warnings. |
 
 ### Refactoring
 
 | Tool | Description |
 |------|-------------|
-| **RenameSymbol** | Rename a symbol and all references across the project, including ASPX/ASCX files. Supports dry-run preview. |
+| **RenameSymbol** | Rename a symbol and all references across the project, including ASPX/ASCX and Razor files. Supports dry-run preview and file renames. |
 
 ### Testing & Coverage
 
 | Tool | Description |
 |------|-------------|
 | **RunTests** | Run tests in a .NET test project with optional filter expression and timeout. |
-| **FindTests** | Find test methods that reference a symbol. Optionally uses coverage data for accurate results. |
+| **DiscoverTests** | Discover all test methods in a project using static Roslyn analysis. Returns test names, frameworks, file paths, and line numbers. |
+| **FindTests** | Find test methods that reference a symbol. Optionally uses coverage data for runtime-accurate results. |
 | **RunCoverage** | Collect code coverage for a test project using coverlet. Caches results for querying. |
 | **GetCoverage** | Query coverage by project, file, class, or method. Shows line and branch coverage with uncovered lines. |
 
@@ -91,17 +111,12 @@ Debugging uses [netcoredbg](https://github.com/Samsung/netcoredbg), which is aut
 |------|-------------|
 | **DebugStartTest** | Start debugging a .NET test project. Builds, launches the test host, and attaches the debugger. |
 | **DebugAttach** | Attach the debugger to a running .NET process by PID. |
-| **DebugListProcesses** | List running .NET processes that can be attached to. |
-| **DebugSetBreakpoint** | Set a breakpoint at a file and line. |
-| **DebugRemoveBreakpoint** | Remove a breakpoint by ID. |
-| **DebugContinue** | Continue execution until the next breakpoint or exit. |
-| **DebugStepIn** | Step into the next function call. |
-| **DebugStepOver** | Step over the current line. |
-| **DebugStepOut** | Step out of the current function. |
-| **DebugEvaluate** | Evaluate an expression in the current debug context. |
-| **DebugLocals** | Get local variables and their values. |
-| **DebugStackTrace** | Get the call stack. |
-| **DebugStatus** | Get debugger status, breakpoints, and current pause position. |
+| **DebugSetBreakpoint** | Set a breakpoint at a file and line. Supports conditions and batch mode. |
+| **DebugRemoveBreakpoint** | Remove a breakpoint by ID. Supports batch removal. |
+| **DebugContinue** | Continue, step in, step over, or step out. |
+| **DebugRunUntil** | Run until a specific location, with optional condition. |
+| **DebugEvaluate** | Evaluate expressions in the current debug context. Supports batch evaluation with semicolons. |
+| **DebugStatus** | Get debugger status, breakpoints, and current pause position with optional locals and stack trace. |
 | **DebugStop** | Stop the debug session and clean up. |
 
 ## Resources
