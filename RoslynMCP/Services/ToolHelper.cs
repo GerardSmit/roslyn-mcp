@@ -135,6 +135,26 @@ internal static class ToolHelper
 
         return sb.ToString().TrimEnd();
     }
+
+    /// <summary>
+    /// Finds the end line of the enclosing declaration (method, property, type, etc.)
+    /// for a given source location by walking up the syntax tree.
+    /// Returns the end line (1-based), or the identifier's end line if no declaration is found.
+    /// </summary>
+    public static int GetDeclarationEndLine(Location location)
+    {
+        if (location.SourceTree is null)
+            return location.GetLineSpan().EndLinePosition.Line + 1;
+
+        var root = location.SourceTree.GetRoot();
+        var node = root.FindNode(location.SourceSpan);
+        var decl = node.AncestorsAndSelf()
+            .FirstOrDefault(n => n is Microsoft.CodeAnalysis.CSharp.Syntax.MemberDeclarationSyntax
+                              or Microsoft.CodeAnalysis.CSharp.Syntax.TypeDeclarationSyntax
+                              or Microsoft.CodeAnalysis.CSharp.Syntax.LocalFunctionStatementSyntax);
+
+        return (decl ?? node).GetLocation().GetLineSpan().EndLinePosition.Line + 1;
+    }
 }
 
 /// <summary>

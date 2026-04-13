@@ -119,8 +119,8 @@ public static class FindImplementationsTool
 
         sb.AppendLine($"## {(isInterface ? "Implementing Types" : "Derived Types")} ({implementations.Count})");
         sb.AppendLine();
-        sb.AppendLine("| Type | File | Line |");
-        sb.AppendLine("|------|------|------|");
+        sb.AppendLine("| Type | File | Lines |");
+        sb.AppendLine("|------|------|-------|");
 
         string? projectDir = Path.GetDirectoryName(project.FilePath);
 
@@ -135,7 +135,9 @@ public static class FindImplementationsTool
                     ? Path.GetRelativePath(projectDir, filePath)
                     : filePath;
                 int line = lineSpan.StartLinePosition.Line + 1;
-                sb.AppendLine($"| {MarkdownFormatter.EscapeTableCell(typeName)} | {MarkdownFormatter.EscapeTableCell(displayPath)} | {line} |");
+                int endLine = ToolHelper.GetDeclarationEndLine(loc);
+                string lineRange = endLine > line ? $"{line}–{endLine}" : $"{line}";
+                sb.AppendLine($"| {MarkdownFormatter.EscapeTableCell(typeName)} | {MarkdownFormatter.EscapeTableCell(displayPath)} | {lineRange} |");
             }
             else
             {
@@ -164,7 +166,7 @@ public static class FindImplementationsTool
                 ? Path.GetRelativePath(projectDir, filePath)
                 : filePath;
 
-            sb.AppendLine($"### {type.Name} ({displayPath}:{startLine + 1})");
+            sb.AppendLine($"### {type.Name} ({displayPath}:{startLine + 1}–{ToolHelper.GetDeclarationEndLine(loc)})");
             sb.AppendLine();
             sb.AppendLine("```csharp");
             for (int i = contextStart; i <= contextEnd; i++)

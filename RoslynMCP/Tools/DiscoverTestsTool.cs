@@ -81,13 +81,15 @@ public static class DiscoverTestsTool
                     var lineSpan = method.Identifier.GetLocation().GetLineSpan();
                     var filePath = document.FilePath ?? "";
 
+                    var endLineSpan = method.GetLocation().GetLineSpan();
                     tests.Add(new TestInfo(
                         fqn,
                         methodSymbol.Name,
                         containingClass,
                         framework,
                         filePath,
-                        lineSpan.StartLinePosition.Line + 1));
+                        lineSpan.StartLinePosition.Line + 1,
+                        endLineSpan.EndLinePosition.Line + 1));
                 }
             }
 
@@ -108,8 +110,8 @@ public static class DiscoverTestsTool
             {
                 sb.AppendLine($"## {group.Key} ({group.First().Framework})");
                 sb.AppendLine();
-                sb.AppendLine("| # | Method | File | Line |");
-                sb.AppendLine("|---|--------|------|------|");
+                sb.AppendLine("| # | Method | File | Lines |");
+                sb.AppendLine("|---|--------|------|-------|");
 
                 int i = 1;
                 foreach (var test in group.OrderBy(t => t.Line))
@@ -118,7 +120,8 @@ public static class DiscoverTestsTool
                     var relPath = projectDir is not null
                         ? Path.GetRelativePath(projectDir, test.FilePath)
                         : test.FilePath;
-                    sb.AppendLine($"| {i++} | {MarkdownFormatter.EscapeTableCell(test.MethodName)} | {relPath} | {test.Line} |");
+                    string lineRange = test.EndLine > test.Line ? $"{test.Line}–{test.EndLine}" : $"{test.Line}";
+                    sb.AppendLine($"| {i++} | {MarkdownFormatter.EscapeTableCell(test.MethodName)} | {relPath} | {lineRange} |");
                 }
                 sb.AppendLine();
             }
@@ -189,5 +192,6 @@ public static class DiscoverTestsTool
         string ClassName,
         string Framework,
         string FilePath,
-        int Line);
+        int Line,
+        int EndLine);
 }

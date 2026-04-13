@@ -144,10 +144,13 @@ public static class TypeHierarchyTool
                 if (loc is not null)
                 {
                     var lineSpan = loc.GetLineSpan();
+                    int startLine = lineSpan.StartLinePosition.Line + 1;
+                    int endLine = ToolHelper.GetDeclarationEndLine(loc);
                     string displayPath = projectDir is not null
                         ? Path.GetRelativePath(projectDir, lineSpan.Path)
                         : lineSpan.Path;
-                    sb.AppendLine($"- {derived.ToDisplayString()} ({displayPath}:{lineSpan.StartLinePosition.Line + 1})");
+                    string lineRange = endLine > startLine ? $"{startLine}–{endLine}" : $"{startLine}";
+                    sb.AppendLine($"- {derived.ToDisplayString()} ({displayPath}:{lineRange})");
                 }
                 else
                 {
@@ -168,7 +171,10 @@ public static class TypeHierarchyTool
         if (loc is not null)
         {
             var lineSpan = loc.GetLineSpan();
-            return $"({Path.GetFileName(lineSpan.Path)}:{lineSpan.StartLinePosition.Line + 1})";
+            int startLine = lineSpan.StartLinePosition.Line + 1;
+            int endLine = ToolHelper.GetDeclarationEndLine(loc);
+            string lineRange = endLine > startLine ? $"{startLine}–{endLine}" : $"{startLine}";
+            return $"({Path.GetFileName(lineSpan.Path)}:{lineRange})";
         }
         if (type.Locations.Any(l => l.IsInMetadata))
             return "(external)";

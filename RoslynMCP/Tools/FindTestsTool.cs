@@ -139,7 +139,8 @@ public static class FindTestsTool
                 sb.AppendLine($"**{group.Key}**");
                 foreach (var test in group)
                 {
-                    sb.AppendLine($"  - {test.MethodName} ({test.FilePath}:{test.Line})");
+                    string lineRange = test.EndLine > test.Line ? $"{test.Line}–{test.EndLine}" : $"{test.Line}";
+                    sb.AppendLine($"  - {test.MethodName} ({test.FilePath}:{lineRange})");
                 }
             }
 
@@ -204,10 +205,12 @@ public static class FindTestsTool
                 if (!seen.Add(fqn)) continue;
 
                 var lineSpan = method.Identifier.GetLocation().GetLineSpan();
+                int endLine = method.GetLocation().GetLineSpan().EndLinePosition.Line + 1;
                 testMethods.Add(new TestMethodInfo(
                     fqn,
                     doc.FilePath ?? "",
-                    lineSpan.StartLinePosition.Line + 1));
+                    lineSpan.StartLinePosition.Line + 1,
+                    endLine));
             }
         }
     }
@@ -333,7 +336,7 @@ public static class FindTestsTool
         return results.Count > 0 ? results : null;
     }
 
-    private sealed record TestMethodInfo(string FullyQualifiedName, string FilePath, int Line)
+    private sealed record TestMethodInfo(string FullyQualifiedName, string FilePath, int Line, int EndLine = 0)
     {
         public string ClassName => FullyQualifiedName.Contains('.')
             ? FullyQualifiedName[..FullyQualifiedName.LastIndexOf('.')]

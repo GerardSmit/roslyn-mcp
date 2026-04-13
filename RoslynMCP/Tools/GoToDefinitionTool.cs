@@ -192,11 +192,15 @@ public static class GoToDefinitionTool
             }
 
             var lineSpan = location.GetLineSpan();
-            int line = lineSpan.StartLinePosition.Line + 1;
+            int startLine = lineSpan.StartLinePosition.Line + 1;
+            int endLine = ToolHelper.GetDeclarationEndLine(location);
             string defFile = lineSpan.Path;
 
             sb.AppendLine($"**File**: {defFile}");
-            sb.AppendLine($"**Line**: {line}");
+            if (endLine > startLine)
+                sb.AppendLine($"**Lines**: {startLine}–{endLine}");
+            else
+                sb.AppendLine($"**Line**: {startLine}");
             sb.AppendLine();
 
             if (includeCodeContext)
