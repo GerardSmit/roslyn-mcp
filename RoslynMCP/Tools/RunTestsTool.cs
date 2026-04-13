@@ -40,6 +40,16 @@ public static class RunTestsTool
             if (csprojPath is null)
                 return $"Error: Could not find a .csproj file for '{projectPath}'.";
 
+            if (PathHelper.RequiresMsBuild(csprojPath))
+            {
+                if (background)
+                    return BackgroundTaskHelper.StartLegacyTestsBackground(
+                        csprojPath, filter, build, timeoutSeconds, taskStore);
+
+                return await RunLegacyTestsAsync(
+                    csprojPath, filter, build, timeoutSeconds, fmt, cancellationToken);
+            }
+
             if (background)
                 return BackgroundTaskHelper.StartTestsBackground(
                     csprojPath, filter, build, timeoutSeconds, taskStore);
@@ -151,6 +161,68 @@ public static class RunTestsTool
 
     internal static string? ResolveCsprojPath(string projectPath) =>
         PathHelper.ResolveCsprojPath(projectPath);
+
+    private static async Task<string> RunLegacyTestsAsync(
+        string csprojPath, string? filter, bool build, int timeoutSeconds,
+        IOutputFormatter fmt, CancellationToken cancellationToken)
+    {
+        var msbuild = MsBuildLocator.FindMsBuild();
+        if (msbuild is null)
+            return "Error: Legacy .NET Framework project requires MSBuild but it could not be found. " +
+                   "Install Visual Studio or Build Tools for Visual Studio.";
+
+        var workingDirectory = Path.GetDirectoryName(csprojPath)!;
+
+        if (build)
+        {
+            var buildArgs = $"\"{csprojPath}\" /nologo /v:minimal";
+            var (buildExitCode, buildOut, buildErr) = await BackgroundTaskHelper.RunProcessAsync(
+                msbuild, buildArgs, workingDirectory, Math.Max(60, timeoutSeconds / 2));
+
+            if (buildExitCode != 0)
+            {
+                var sb = new StringBuilder();
+                fmt.AppendHeader(sb, "❌ Build Failed");
+                sb.AppendLine("```");
+                sb.AppendLine((buildOut + buildErr).Trim());
+                sb.AppendLine("```");
+                return sb.ToString();
+            }
+        }
+
+        var targetPath = MsBuildLocator.GetTargetPath(csprojPath);
+        if (targetPath is null || !File.Exists(targetPath))
+            return "Error: Could not determine test assembly path. " +
+                   "Ensure the project has been built successfully.";
+
+        var trxPath = Path.Combine(Path.GetTempPath(), $"roslyn-mcp-{Guid.NewGuid():N}.trx");
+        var vstestArgs = new StringBuilder();
+        vstestArgs.Append($"vstest \"{targetPath}\"");
+        if (!string.IsNullOrWhiteSpace(filter))
+        {
+            vstestArgs.Append(" /TestCaseFilter:\"");
+            vstestArgs.Append(filter.Replace("\"", "\\\""));
+            vstestArgs.Append('"');
+        }
+        vstestArgs.Append($" /logger:\"trx;LogFileName={trxPath}\"");
+
+        var (exitCode, stdout, stderr) = await BackgroundTaskHelper.RunProcessAsync(
+            "dotnet", vstestArgs.ToString(), workingDirectory, timeoutSeconds);
+
+        string result;
+        if (File.Exists(trxPath))
+        {
+            try { result = FormatTrxOutput(trxPath, exitCode, fmt); }
+            catch { result = FormatTestOutput(stdout, stderr, exitCode, fmt); }
+            finally { try { File.Delete(trxPath); } catch { } }
+        }
+        else
+        {
+            result = FormatTestOutput(stdout, stderr, exitCode, fmt);
+        }
+
+        return result;
+    }
 
     internal static string FormatTestOutput(string stdout, string stderr, int exitCode, IOutputFormatter fmt)
     {

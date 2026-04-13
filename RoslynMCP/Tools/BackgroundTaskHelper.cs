@@ -87,6 +87,89 @@ internal static class BackgroundTaskHelper
                $"Once complete, use `GetCoverage` to query the cached results.";
     }
 
+    /// <summary>Starts a MSBuild+VSTest run for a legacy .NET Framework project in the background.</summary>
+    internal static string StartLegacyTestsBackground(
+        string csprojPath, string? filter, bool build, int timeoutSeconds,
+        BackgroundTaskStore taskStore)
+    {
+        var description = $"vstest {Path.GetFileNameWithoutExtension(csprojPath)}";
+        if (!string.IsNullOrWhiteSpace(filter))
+            description += $" /TestCaseFilter:{filter}";
+
+        var taskId = taskStore.CreateTask(BackgroundTaskStore.TaskKind.Tests, description);
+        _ = RunBuildThenLegacyTestAsync(taskId, csprojPath, filter, build, timeoutSeconds, taskStore);
+
+        return $"Tests started in background{(build ? " (build → vstest)" : "")}.\n" +
+               $"**Task ID:** `{taskId}`\n" +
+               $"**Command:** {description}\n\n" +
+               $"You can continue working on other tasks. " +
+               $"Check results later with `GetBackgroundTaskResult(\"{taskId}\")`.";
+    }
+
+    private static async Task RunBuildThenLegacyTestAsync(
+        string taskId, string csprojPath, string? filter, bool build,
+        int timeoutSeconds, BackgroundTaskStore taskStore)
+    {
+        try
+        {
+            var workingDirectory = Path.GetDirectoryName(csprojPath)!;
+            var result = new StringBuilder();
+
+            var msbuild = MsBuildLocator.FindMsBuild();
+            if (msbuild is null)
+            {
+                taskStore.Complete(taskId,
+                    "Error: MSBuild not found. Install Visual Studio or Build Tools.", -1);
+                return;
+            }
+
+            if (build)
+            {
+                var buildArgs = $"\"{csprojPath}\" /nologo /v:minimal";
+                var (buildExitCode, buildOutput, buildErrors) = await RunProcessAsync(
+                    msbuild, buildArgs, workingDirectory, Math.Max(60, timeoutSeconds / 2));
+
+                if (buildExitCode != 0)
+                {
+                    result.AppendLine("❌ **Build failed** — tests were not started.");
+                    AppendProcessOutput(result, buildOutput, buildErrors, buildExitCode);
+                    taskStore.Complete(taskId, result.ToString(), buildExitCode);
+                    return;
+                }
+
+                result.AppendLine("✅ **Build succeeded**");
+            }
+
+            var targetPath = MsBuildLocator.GetTargetPath(csprojPath);
+            if (targetPath is null || !File.Exists(targetPath))
+            {
+                taskStore.Complete(taskId,
+                    "Error: Could not determine test assembly path. " +
+                    "Ensure the project has been built successfully.", -1);
+                return;
+            }
+
+            var vstestArgs = new StringBuilder($"vstest \"{targetPath}\"");
+            if (!string.IsNullOrWhiteSpace(filter))
+                vstestArgs.Append($" /TestCaseFilter:\"{filter!.Replace("\"", "\\\"")}\"");
+
+            var (testExitCode, testOutput, testErrors) = await RunProcessAsync(
+                "dotnet", vstestArgs.ToString(), workingDirectory, timeoutSeconds);
+
+            result.AppendLine(testExitCode == 0 ? "✅ **Tests passed**" : "❌ **Tests failed**");
+            AppendProcessOutput(result, testOutput, testErrors, testExitCode);
+            taskStore.Complete(taskId, result.ToString(), testExitCode);
+        }
+        catch (OperationCanceledException)
+        {
+            taskStore.Cancel(taskId, $"Task timed out after {timeoutSeconds} seconds.");
+        }
+        catch (Exception ex)
+        {
+            taskStore.Complete(taskId, $"Error: {ex.Message}", -1);
+        }
+    }
+
     private static async Task RunBuildThenTestAsync(
         string taskId, string csprojPath, string? filter, bool build,
         int timeoutSeconds, BackgroundTaskStore taskStore)

@@ -83,7 +83,7 @@ internal static class MsBuildLocator
         var programFilesX86 = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86);
 
         var editions = new[] { "Enterprise", "Professional", "Community", "BuildTools", "Preview" };
-        var versions = new[] { "2022", "2019", "2017" };
+        var versions = new[] { "18", "2022", "2019", "2017" };
         var relativePath = @"MSBuild\Current\Bin\MSBuild.exe";
 
         foreach (var version in versions)
@@ -107,6 +107,50 @@ internal static class MsBuildLocator
             if (File.Exists(candidate))
                 return candidate;
         }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Returns the full output path of the built assembly for a legacy project,
+    /// using MSBuild's <c>/getProperty:TargetPath</c>. Returns null if MSBuild
+    /// is not found or the property cannot be evaluated.
+    /// </summary>
+    public static string? GetTargetPath(string csprojPath)
+    {
+        var msbuild = FindMsBuild();
+        if (msbuild is null) return null;
+
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = msbuild,
+                    Arguments = $"\"{csprojPath}\" /nologo /v:minimal /getProperty:TargetPath",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    CreateNoWindow = true,
+                    WorkingDirectory = Path.GetDirectoryName(csprojPath)!
+                }
+            };
+
+            process.Start();
+            var output = process.StandardOutput.ReadToEnd().Trim();
+            process.WaitForExit();
+
+            // Output is the TargetPath value — pick the last non-empty line (MSBuild may print warnings)
+            foreach (var line in output.Split('\n').Reverse())
+            {
+                var candidate = line.Trim();
+                if (candidate.EndsWith(".dll", StringComparison.OrdinalIgnoreCase) ||
+                    candidate.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+                    return candidate;
+            }
+        }
+        catch { }
 
         return null;
     }

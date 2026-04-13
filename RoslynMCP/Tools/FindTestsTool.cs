@@ -144,14 +144,24 @@ public static class FindTestsTool
             }
 
             sb.AppendLine();
-            sb.AppendLine("**dotnet test filter:**");
-            if (testMethods.Count == 1)
+            bool isLegacy = ctx.Project.FilePath is not null &&
+                PathHelper.RequiresMsBuild(ctx.Project.FilePath);
+
+            if (isLegacy)
             {
-                sb.AppendLine($"`--filter \"FullyQualifiedName={testMethods[0].FullyQualifiedName}\"`");
+                sb.AppendLine("**VSTest filter:**");
+                if (testMethods.Count == 1)
+                    sb.AppendLine($"`/TestCaseFilter:\"FullyQualifiedName={testMethods[0].FullyQualifiedName}\"`");
+                else
+                    sb.AppendLine($"`/TestCaseFilter:\"FullyQualifiedName~{testMethods[0].ClassName}\"`");
             }
             else
             {
-                sb.AppendLine($"`--filter \"FullyQualifiedName~{testMethods[0].ClassName}\"`");
+                sb.AppendLine("**dotnet test filter:**");
+                if (testMethods.Count == 1)
+                    sb.AppendLine($"`--filter \"FullyQualifiedName={testMethods[0].FullyQualifiedName}\"`");
+                else
+                    sb.AppendLine($"`--filter \"FullyQualifiedName~{testMethods[0].ClassName}\"`");
             }
 
             return sb.ToString();
