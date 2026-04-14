@@ -47,9 +47,69 @@ internal static class WorkspaceService
     /// </summary>
     static WorkspaceService()
     {
+        PatchBuildHostBindingRedirects();
         TryRegisterVisualStudioMSBuild();
         RuntimeHelpers.RunClassConstructor(typeof(CSharpSyntaxTree).TypeHandle);
         s_evictionTimer = new Timer(EvictExpiredEntries, null, EvictionInterval, EvictionInterval);
+    }
+
+    /// <summary>
+    /// Roslyn's BuildHost-net472 subprocess loads MSBuild via MSBuildLocator, which on
+    /// .NET Framework picks the highest installed Visual Studio version. With VS 2026
+    /// (MSBuild 18) installed, the BuildHost picks v18 — and v18 references newer versions
+    /// of System.Collections.Immutable, System.Memory, System.Threading.Tasks.Extensions,
+    /// Microsoft.Bcl.AsyncInterfaces and System.Text.Json than the BuildHost ships.
+    /// The original BuildHost.exe.config caps redirects (e.g. 0.0.0.0-9.0.0.0) so the
+    /// CLR cannot satisfy v18's requested versions (e.g. 9.0.0.11), causing a
+    /// TypeInitializationException for Microsoft.Build.Shared.XMakeElements.
+    ///
+    /// Fix: rewrite the redirect upper-bound to a very high value so any version
+    /// MSBuild 18 (or future MSBuild) requests is satisfied by the BuildHost-shipped DLLs.
+    /// This is idempotent — if already patched, nothing happens.
+    /// </summary>
+    private static void PatchBuildHostBindingRedirects()
+    {
+        try
+        {
+            var configPath = LocateBuildHostConfig();
+            if (configPath is null || !File.Exists(configPath))
+                return;
+
+            var original = File.ReadAllText(configPath);
+
+            // Look for any redirect with a non-99 upper bound; if all are already widened, skip.
+            // Replacement: oldVersion="0.0.0.0-X.Y.Z" -> oldVersion="0.0.0.0-99.0.0.0"
+            var pattern = new System.Text.RegularExpressions.Regex(
+                "oldVersion=\"0\\.0\\.0\\.0-(?!99\\.0\\.0\\.0\")[0-9.]+\"");
+
+            if (!pattern.IsMatch(original))
+                return;
+
+            var patched = pattern.Replace(original, "oldVersion=\"0.0.0.0-99.0.0.0\"");
+            File.WriteAllText(configPath, patched);
+
+            Console.Error.WriteLine(
+                $"[WorkspaceService] Patched BuildHost binding redirects at '{configPath}' for MSBuild 18 compatibility.");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[WorkspaceService] Failed to patch BuildHost binding redirects: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Returns the absolute path to the BuildHost-net472 .exe.config, located alongside
+    /// the executing assembly under <c>BuildHost-net472/</c>.
+    /// </summary>
+    private static string? LocateBuildHostConfig()
+    {
+        var asmDir = Path.GetDirectoryName(typeof(WorkspaceService).Assembly.Location);
+        if (string.IsNullOrEmpty(asmDir))
+            return null;
+
+        return Path.Combine(asmDir, "BuildHost-net472",
+            "Microsoft.CodeAnalysis.Workspaces.MSBuild.BuildHost.exe.config");
     }
 
     /// <summary>
@@ -65,52 +125,99 @@ internal static class WorkspaceService
 
             var instances = MSBuildLocator.QueryVisualStudioInstances().ToList();
 
-            if (instances.Count == 0)
-                return;
-
-            // Only full Visual Studio installations can load legacy .csproj files via Roslyn's
-            // .NET Framework build host. DotNetSdk instances use the netcore build host which
-            // cannot evaluate legacy toolsets (ToolsVersion="15.0", Microsoft.CSharp.targets, etc.).
-            //
-            // VS 2026+ (MSBuild 18+) introduced a dependency on Microsoft.VisualStudio.Telemetry.dll
-            // that is not present in the MSBuild bin directory. Roslyn's .NET Framework build host
-            // fails to load legacy projects because it can't resolve that assembly at runtime.
-            // Prefer VS 2022 or earlier (MSBuild 17.x) for full legacy project support.
-            var vsInstances = instances
-                .Where(i => i.DiscoveryType == DiscoveryType.VisualStudioSetup)
-                .ToList();
-
-            var legacyCompatibleInstance = vsInstances
-                .Where(i => i.Version.Major < 18)
+            // The parent process is .NET 10 and only ever loads SDK-style projects in-process
+            // (legacy .NET Framework projects are loaded by the BuildHost-net472 subprocess,
+            // which does its OWN MSBuildLocator discovery). So we MUST register the .NET SDK
+            // MSBuild here — registering a VS MSBuild bin path in this process would hijack
+            // assembly resolution (e.g. System.Text.Json) and break the SDK resolver.
+            var dotnetSdkInstance = instances
+                .Where(i => i.DiscoveryType == DiscoveryType.DotNetSdk)
                 .OrderByDescending(i => i.Version)
                 .FirstOrDefault();
 
-            // Fall back to the best available VS instance (even if incompatible with legacy),
-            // then fall back to the highest .NET SDK instance so the workspace still works.
-            var instance = legacyCompatibleInstance
-                ?? vsInstances.OrderByDescending(i => i.Version).FirstOrDefault()
-                ?? instances.OrderByDescending(i => i.Version).First();
-
-            MSBuildLocator.RegisterInstance(instance);
-
-            // Legacy .NET Framework projects require both targeting packs and a compatible MSBuild.
+            // Legacy .NET Framework support is determined entirely by what's available to the
+            // BuildHost subprocess: a VS install with the MSBuild component AND .NET Framework
+            // targeting packs. We probe via vswhere because MSBuildLocator's VS Setup COM
+            // discovery often fails in the .NET 10 host even when VS is installed.
             var refAssembliesPath = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
                 "Reference Assemblies", "Microsoft", "Framework", ".NETFramework");
 
-            IsLegacyProjectSupported = legacyCompatibleInstance is not null && Directory.Exists(refAssembliesPath);
+            var legacyMsBuildDir = Directory.Exists(refAssembliesPath)
+                ? FindLegacyCompatibleMsBuildDirViaVsWhere()
+                : null;
+            IsLegacyProjectSupported = legacyMsBuildDir is not null;
 
+            if (dotnetSdkInstance is not null)
+            {
+                MSBuildLocator.RegisterInstance(dotnetSdkInstance);
+                Console.Error.WriteLine(
+                    $"[WorkspaceService] Registered MSBuild from '{dotnetSdkInstance.Name}' v{dotnetSdkInstance.Version} at '{dotnetSdkInstance.MSBuildPath}'."
+                    + (IsLegacyProjectSupported
+                        ? $" Legacy .NET Framework projects supported via BuildHost (MSBuild at '{legacyMsBuildDir}')."
+                        : " Legacy .NET Framework projects NOT supported (no VS install with MSBuild component, or no targeting packs)."));
+                return;
+            }
+
+            if (instances.Count == 0)
+                return;
+
+            // No DotNetSdk instance found — fall back to whatever is available so the workspace
+            // at least works for legacy projects.
+            var instance = instances.OrderByDescending(i => i.Version).First();
+            MSBuildLocator.RegisterInstance(instance);
             Console.Error.WriteLine(
-                $"[WorkspaceService] Registered MSBuild from '{instance.Name}' v{instance.Version} at '{instance.MSBuildPath}'."
-                + (IsLegacyProjectSupported
-                    ? " Legacy .NET Framework projects supported."
-                    : " Legacy .NET Framework projects NOT supported (requires VS 2022 or earlier)."));
+                $"[WorkspaceService] Registered MSBuild from '{instance.Name}' v{instance.Version} at '{instance.MSBuildPath}' (no .NET SDK MSBuild instance found).");
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine(
                 $"[WorkspaceService] MSBuild Locator failed, using SDK-bundled MSBuild: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Uses vswhere to find the MSBuild bin directory of a VS installation with the MSBuild
+    /// component (VS 2017 or later, including VS 2026 / MSBuild 18). Returns the directory
+    /// path (containing MSBuild.dll), or null if not found.
+    /// </summary>
+    private static string? FindLegacyCompatibleMsBuildDirViaVsWhere()
+    {
+        var vswherePath = MsBuildLocator.EnsureVsWhere();
+
+        if (vswherePath is null)
+            return null;
+
+        try
+        {
+            using var process = new System.Diagnostics.Process
+            {
+                StartInfo = new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = vswherePath,
+                    // -products * includes BuildTools; no version filter — newest wins.
+                    Arguments = "-products * -requires Microsoft.Component.MSBuild " +
+                                "-find MSBuild\\**\\Bin\\MSBuild.exe -latest",
+                    UseShellExecute = false,
+                    RedirectStandardOutput = true,
+                    CreateNoWindow = true
+                }
+            };
+
+            process.Start();
+            var output = process.StandardOutput.ReadToEnd().Trim();
+            process.WaitForExit();
+
+            foreach (var line in output.Split('\n'))
+            {
+                var exePath = line.Trim();
+                if (File.Exists(exePath))
+                    return Path.GetDirectoryName(exePath);
+            }
+        }
+        catch { }
+
+        return null;
     }
 
     /// <summary>
@@ -208,6 +315,11 @@ internal static class WorkspaceService
             else
             {
                 var isLegacy = PathHelper.RequiresMsBuild(normalizedPath);
+                if (isLegacy && !IsLegacyProjectSupported)
+                    throw new NotSupportedException(
+                        "Legacy .NET Framework projects require a Visual Studio install with the MSBuild " +
+                        "component (VS 2017+ or Build Tools 2017+) and the .NET Framework targeting packs. " +
+                        "Install 'Visual Studio Build Tools' and relaunch the MCP server.");
                 var msbuildWorkspace = CreateWorkspace(diagnosticWriter, isLegacy);
 
                 try
