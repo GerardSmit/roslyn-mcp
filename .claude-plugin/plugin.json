@@ -1,0 +1,14 @@
+{
+  "name": "roslyn-sense",
+  "description": "Roslyn-powered C# code analysis, navigation, refactoring, testing, debugging, and profiling. Provides IDE-like intelligence for C# projects through MCP tools.",
+  "author": {
+    "name": "Gerard Smit",
+    "url": "https://github.com/GerardSmit"
+  },
+  "mcpServers": {
+    "RoslynSense": {
+      "type": "stdio",
+      "command": "roslyn-sense"
+    }
+  }
+}

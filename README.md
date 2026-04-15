@@ -6,7 +6,7 @@ Inspired by [egorpavlikhin/roslyn-mcp](https://github.com/egorpavlikhin/roslyn-m
 
 ## Install
 
-Install from NuGet as a global .NET tool:
+### Step 1 — Install the .NET tool
 
 ```
 dotnet tool install --global RoslynSense
@@ -18,7 +18,69 @@ Update an existing install:
 dotnet tool update --global RoslynSense
 ```
 
-## MCP Configuration
+### Step 2 — Configure your agent
+
+<details>
+<summary>Claude Code</summary>
+
+Via the plugin marketplace (recommended):
+
+```bash
+claude plugin marketplace add GerardSmit/RoslynSense && claude plugin install roslyn-sense@roslyn-sense
+```
+
+Or add the MCP server directly (project-scoped):
+
+```bash
+claude mcp add RoslynSense --transport stdio -- roslyn-sense
+```
+
+For a global installation available in all projects, add `--scope user`:
+
+```bash
+claude mcp add --scope user RoslynSense --transport stdio -- roslyn-sense
+```
+
+</details>
+
+<details>
+<summary>Cursor</summary>
+
+Add to `.cursor/mcp.json` in your project root (or `~/.cursor/mcp.json` for global):
+
+```json
+{
+    "mcpServers": {
+        "RoslynSense": {
+            "command": "roslyn-sense"
+        }
+    }
+}
+```
+
+</details>
+
+<details>
+<summary>Windsurf</summary>
+
+Add to `~/.codeium/windsurf/mcp_config.json`:
+
+```json
+{
+    "mcpServers": {
+        "RoslynSense": {
+            "command": "roslyn-sense"
+        }
+    }
+}
+```
+
+</details>
+
+<details>
+<summary>VS Code (Cline / Continue / Copilot)</summary>
+
+Add to `.vscode/mcp.json` in your project root, or open the command palette and run **MCP: Open User Configuration** to configure it globally:
 
 ```json
 {
@@ -31,6 +93,81 @@ dotnet tool update --global RoslynSense
 }
 ```
 
+</details>
+
+<details>
+<summary>Visual Studio</summary>
+
+Add to `.mcp.json` in your solution root (committed to source control) or `%USERPROFILE%\.mcp.json` for a global configuration:
+
+```json
+{
+    "servers": {
+        "RoslynSense": {
+            "type": "stdio",
+            "command": "roslyn-sense"
+        }
+    }
+}
+```
+
+</details>
+
+<details>
+<summary>GitHub Copilot CLI</summary>
+
+For a global installation, run `/mcp add` inside Copilot CLI and fill in the interactive form (stores to `~/.copilot/mcp-config.json`). Select **Local/STDIO** as the server type and use `roslyn-sense` as the command.
+
+For a project-scoped configuration, add to `.mcp.json` in your project root (v1.0.22+):
+
+```json
+{
+    "mcpServers": {
+        "RoslynSense": {
+            "command": "roslyn-sense"
+        }
+    }
+}
+```
+
+</details>
+
+<details>
+<summary>Kiro</summary>
+
+Add to `.kiro/settings/mcp.json` in your project root (or `~/.kiro/settings/mcp.json` for global):
+
+```json
+{
+    "mcpServers": {
+        "RoslynSense": {
+            "command": "roslyn-sense",
+            "args": []
+        }
+    }
+}
+```
+
+</details>
+
+<details>
+<summary>Other MCP clients</summary>
+
+Use the following server configuration:
+
+```json
+{
+    "servers": {
+        "RoslynSense": {
+            "type": "stdio",
+            "command": "roslyn-sense"
+        }
+    }
+}
+```
+
+</details>
+
 ### Command-Line Options
 
 | Flag | Description |
@@ -38,7 +175,7 @@ dotnet tool update --global RoslynSense
 | `--no-webforms` | Disable WebForms (ASPX/ASCX) support. |
 | `--no-razor` | Disable Razor (.razor/.cshtml) support. |
 
-Example configuration with Razor disabled:
+Example with Razor disabled:
 
 ```json
 {

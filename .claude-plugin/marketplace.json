@@ -1,0 +1,17 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "roslyn-sense",
+  "description": "Roslyn-powered C# code analysis, navigation, refactoring, testing, debugging, and profiling via MCP.",
+  "owner": {
+    "name": "Gerard Smit",
+    "url": "https://github.com/GerardSmit"
+  },
+  "plugins": [
+    {
+      "name": "roslyn-sense",
+      "description": "C# code intelligence: diagnostics, go-to-definition, find usages, refactoring, testing, debugging, and profiling.",
+      "source": "./",
+      "category": "developer-tools"
+    }
+  ]
+}

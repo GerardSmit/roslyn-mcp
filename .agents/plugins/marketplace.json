@@ -1,0 +1,20 @@
+{
+  "name": "roslyn-sense-repo",
+  "interface": {
+    "displayName": "RoslynSense"
+  },
+  "plugins": [
+    {
+      "name": "roslyn-sense",
+      "source": {
+        "source": "local",
+        "path": "./"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Developer Tools"
+    }
+  ]
+}
