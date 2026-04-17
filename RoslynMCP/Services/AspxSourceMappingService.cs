@@ -208,17 +208,18 @@ internal static class AspxSourceMappingService
     public static ISymbol? ResolveAspxSymbol(
         AspxParseResult parseResult,
         string fileText,
-        MarkupString markup)
+        MarkupString markup,
+        int? hintLine = null)
     {
         if (parseResult.ParseTree is null)
             return null;
 
         // Find the marked text position in the ASPX source
         var matches = MarkupSymbolResolver.FindAllOccurrences(fileText, markup.PlainText);
-        if (matches.Count != 1)
+        if (matches.Count == 0)
             return null;
 
-        var match = matches[0];
+        var match = PickBestMatch(fileText, matches, hintLine);
         int markedStart = MarkupSymbolResolver.MapSnippetOffsetToFile(
             fileText, match, markup.PlainText, markup.SpanStart);
         int markedEnd = MarkupSymbolResolver.MapSnippetOffsetToFile(
@@ -357,6 +358,31 @@ internal static class AspxSourceMappingService
     }
 
     /// <summary>
+    /// Picks the best <see cref="MarkupSymbolResolver.SnippetMatch"/> from <paramref name="matches"/>
+    /// by finding the one whose file offset is on the line closest to <paramref name="hintLine"/>.
+    /// When <paramref name="hintLine"/> is <c>null</c> or there is only one match, the first match
+    /// is returned (preserves original behaviour for the common case).
+    /// </summary>
+    private static MarkupSymbolResolver.SnippetMatch PickBestMatch(
+        string fileText, List<MarkupSymbolResolver.SnippetMatch> matches, int? hintLine)
+    {
+        if (matches.Count == 1 || hintLine is null)
+            return matches[0];
+
+        return matches.MinBy(m => Math.Abs(OffsetToLineNumber(fileText, m.FileOffset) - hintLine.Value))!;
+    }
+
+    /// <summary>Returns the 1-based line number for a character offset in <paramref name="text"/>.</summary>
+    private static int OffsetToLineNumber(string text, int offset)
+    {
+        int line = 1;
+        int limit = Math.Min(offset, text.Length);
+        for (int i = 0; i < limit; i++)
+            if (text[i] == '\n') line++;
+        return line;
+    }
+
+    /// <summary>
     /// Returns <c>true</c> when <paramref name="control"/> is nested inside a <see cref="TemplateNode"/>,
     /// meaning it has no direct code-behind field and must be accessed via <c>FindControl</c>.
     /// </summary>
@@ -376,14 +402,15 @@ internal static class AspxSourceMappingService
     /// indicated by the markup snippet. Returns <c>null</c> if no such control is found.
     /// </summary>
     internal static ControlNode? FindControlNodeAtCursor(
-        AspxParseResult parseResult, string fileText, MarkupString markup)
+        AspxParseResult parseResult, string fileText, MarkupString markup,
+        int? hintLine = null)
     {
         if (parseResult.ParseTree is null) return null;
 
         var matches = MarkupSymbolResolver.FindAllOccurrences(fileText, markup.PlainText);
-        if (matches.Count != 1) return null;
+        if (matches.Count == 0) return null;
 
-        var match = matches[0];
+        var match = PickBestMatch(fileText, matches, hintLine);
         int markedStart = MarkupSymbolResolver.MapSnippetOffsetToFile(
             fileText, match, markup.PlainText, markup.SpanStart);
         int markedEnd = MarkupSymbolResolver.MapSnippetOffsetToFile(
@@ -404,9 +431,10 @@ internal static class AspxSourceMappingService
     }
 
     /// <summary>
-    /// Scans all C# documents in the project for methods that pass one of their string parameters
-    /// directly to <c>FindControl</c>. Returns a list of <c>(MethodName, ParameterIndex)</c> pairs
-    /// that can be used as wrapper methods when searching for control ID references.
+    /// Scans all C# documents in the project — and in directly referenced projects — for methods
+    /// that pass one of their string parameters directly to <c>FindControl</c>. Returns a list of
+    /// <c>(MethodName, ParameterIndex)</c> pairs that can be used as wrapper methods when searching
+    /// for control ID references.
     /// </summary>
     internal static async Task<List<(string MethodName, int ParamIndex, bool IsExtension)>> FindControlAccessorMethodsAsync(
         Project project, CancellationToken ct)
@@ -414,7 +442,17 @@ internal static class AspxSourceMappingService
         var wrappers = new List<(string MethodName, int ParamIndex, bool IsExtension)>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
-        foreach (var document in project.Documents)
+        // Collect documents from this project and all directly referenced projects so that
+        // FindControl wrapper methods defined in shared utility assemblies are discovered.
+        var projectsToScan = new List<Project> { project };
+        foreach (var projectRef in project.ProjectReferences)
+        {
+            var refProject = project.Solution.GetProject(projectRef.ProjectId);
+            if (refProject is not null)
+                projectsToScan.Add(refProject);
+        }
+
+        foreach (var document in projectsToScan.SelectMany(p => p.Documents))
         {
             ct.ThrowIfCancellationRequested();
 

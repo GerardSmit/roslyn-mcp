@@ -20,6 +20,8 @@ public static class RunCoverageTool
         [Description("Set to true to run coverage in the background. Returns a task ID immediately " +
                      "so you can continue working. Use GetBackgroundTaskResult to check results later.")]
         bool background = false,
+        [Description("Timeout in seconds for the coverage run. Default is 300 (5 minutes). Set to 0 for no timeout.")]
+        int timeoutSeconds = 300,
         CancellationToken cancellationToken = default)
     {
         try
@@ -38,7 +40,7 @@ public static class RunCoverageTool
                     csprojPath, filter, taskStore);
             }
 
-            var result = await CoverageService.RunCoverageAsync(systemPath, filter, cancellationToken);
+            var result = await CoverageService.RunCoverageAsync(systemPath, filter, timeoutSeconds, cancellationToken);
             return result.Message;
         }
         catch (OperationCanceledException) { throw; }

@@ -19,6 +19,13 @@ public sealed class BuildWarningsStore
     private static readonly Regex WarningMessageRegex =
         new(@"\bwarning\s+[A-Za-z]+\d+\s*:\s*(.+?)(?:\s*\[.*?\])?\s*$", RegexOptions.Compiled);
 
+    private string? _lastBuiltProject;
+
+    /// <summary>
+    /// Returns the resolved project path from the most recent <see cref="Store"/> call, or null if nothing has been built yet.
+    /// </summary>
+    public string? LastBuiltProject => _lastBuiltProject;
+
     /// <summary>Stores all parsed warning lines for a given build target, replacing any prior data.</summary>
     public void Store(string resolvedProjectPath, IEnumerable<string> warningLines)
     {
@@ -33,6 +40,7 @@ public sealed class BuildWarningsStore
             list.Add(line.Trim());
         }
         _cache[NormalizeKey(resolvedProjectPath)] = grouped;
+        _lastBuiltProject = resolvedProjectPath;
     }
 
     /// <summary>

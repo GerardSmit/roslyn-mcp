@@ -105,7 +105,7 @@ public sealed class GetBuildWarningsToolTests
     {
         var store = new BuildWarningsStore();
         var result = GetBuildWarningsTool.GetBuildWarnings(
-            FixturePaths.SampleProjectFile, "CS0219", store);
+            "CS0219", store, FixturePaths.SampleProjectFile);
 
         Assert.Contains("Run BuildProject first", result);
     }
@@ -121,7 +121,7 @@ public sealed class GetBuildWarningsToolTests
 
         // CS0219: unused variable warning from Warnings.cs
         var result = GetBuildWarningsTool.GetBuildWarnings(
-            FixturePaths.SampleProjectFile, "CS0219", warningsStore);
+            "CS0219", warningsStore, FixturePaths.SampleProjectFile);
 
         // Either found warnings or "no warnings of that code" — either way, not the "run build first" message
         Assert.DoesNotContain("Run BuildProject first", result);
@@ -137,8 +137,33 @@ public sealed class GetBuildWarningsToolTests
             [@"C:\Foo.cs(1,1): warning CS0414: msg [C:\Foo.csproj]"]);
 
         var result = GetBuildWarningsTool.GetBuildWarnings(
-            FixturePaths.SampleProjectFile, "CS9999", store);
+            "CS9999", store, FixturePaths.SampleProjectFile);
 
         Assert.Contains("No warnings with code CS9999", result);
+    }
+
+    [Fact]
+    public void WhenNoProjectPath_UsesLastBuiltProject()
+    {
+        var store = new BuildWarningsStore();
+        store.Store(
+            FixturePaths.SampleProjectFile,
+            [@"C:\Foo.cs(1,1): warning CS0414: msg [C:\Foo.csproj]"]);
+
+        // No projectPath provided — should use LastBuiltProject
+        var result = GetBuildWarningsTool.GetBuildWarnings("CS0414", store);
+
+        Assert.Contains("CS0414", result);
+        Assert.DoesNotContain("Run BuildProject first", result);
+    }
+
+    [Fact]
+    public void WhenNoProjectPath_AndNothingBuilt_ReturnsHelpMessage()
+    {
+        var store = new BuildWarningsStore();
+
+        var result = GetBuildWarningsTool.GetBuildWarnings("CS0414", store);
+
+        Assert.Contains("Run BuildProject first", result);
     }
 }

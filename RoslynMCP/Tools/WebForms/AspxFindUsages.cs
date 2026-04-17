@@ -16,7 +16,7 @@ internal class AspxFindUsages(IOutputFormatter fmt) : IFindUsagesHandler
 
     public async Task<string> FindUsagesAsync(
         string systemPath, string markupSnippet, int maxResults,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, int? hintLine = null)
     {
         if (!MarkupString.TryParse(markupSnippet, out var markup, out string? parseError))
             return $"Error: Invalid markup snippet. {parseError}";
@@ -58,7 +58,7 @@ internal class AspxFindUsages(IOutputFormatter fmt) : IFindUsagesHandler
             namespaces: webConfigNamespaces.IsDefaultOrEmpty ? null : webConfigNamespaces,
             rootDirectory: projectDir);
 
-        var symbol = AspxSourceMappingService.ResolveAspxSymbol(parseResult, fileText, markup!);
+        var symbol = AspxSourceMappingService.ResolveAspxSymbol(parseResult, fileText, markup!, hintLine);
 
         // Determine control ID (the string ID of the control in markup)
         string? controlId = null;
@@ -67,7 +67,7 @@ internal class AspxFindUsages(IOutputFormatter fmt) : IFindUsagesHandler
 
         if (controlId is null)
         {
-            var controlNode = AspxSourceMappingService.FindControlNodeAtCursor(parseResult, fileText, markup!);
+            var controlNode = AspxSourceMappingService.FindControlNodeAtCursor(parseResult, fileText, markup!, hintLine);
             if (controlNode?.Id is not null)
                 controlId = controlNode.Id;
         }

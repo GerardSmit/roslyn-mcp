@@ -44,7 +44,7 @@ public static class FindUsagesTool
                 foreach (var handler in handlers)
                 {
                     if (handler.CanHandle(normalizedPath))
-                        return await handler.FindUsagesAsync(normalizedPath, markupSnippet, maxResults, cancellationToken);
+                        return await handler.FindUsagesAsync(normalizedPath, markupSnippet, maxResults, cancellationToken, hintLine);
                 }
             }
 

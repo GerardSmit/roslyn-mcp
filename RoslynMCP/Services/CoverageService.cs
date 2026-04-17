@@ -20,7 +20,7 @@ public static class CoverageService
     /// Runs dotnet test with coverage collection for a project. Returns a summary and caches results.
     /// </summary>
     public static async Task<CoverageResult> RunCoverageAsync(
-        string projectPath, string? filter = null, CancellationToken cancellationToken = default)
+        string projectPath, string? filter = null, int timeoutSeconds = 300, CancellationToken cancellationToken = default)
     {
         string csprojPath;
         if (projectPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) && File.Exists(projectPath))
@@ -36,7 +36,7 @@ public static class CoverageService
         }
 
         if (PathHelper.RequiresMsBuild(csprojPath))
-            return await RunLegacyCoverageAsync(csprojPath, filter, cancellationToken);
+            return await RunLegacyCoverageAsync(csprojPath, filter, timeoutSeconds, cancellationToken);
 
         // Create a temp directory for results to avoid conflicts
         string resultsDir = Path.Combine(Path.GetTempPath(), "roslyn-mcp-coverage", Guid.NewGuid().ToString("N"));
@@ -94,11 +94,17 @@ public static class CoverageService
 
             try
             {
-                await process.WaitForExitAsync(cancellationToken);
+                using var timeoutCts = timeoutSeconds > 0
+                    ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+                    : null;
+                timeoutCts?.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+                await process.WaitForExitAsync(timeoutCts?.Token ?? cancellationToken);
             }
             catch (OperationCanceledException)
             {
                 try { process.Kill(entireProcessTree: true); } catch { }
+                if (timeoutSeconds > 0 && !cancellationToken.IsCancellationRequested)
+                    return new CoverageResult(false, $"Coverage collection timed out after {timeoutSeconds} seconds.", null);
                 return new CoverageResult(false, "Coverage collection was cancelled.", null);
             }
 
@@ -140,7 +146,7 @@ public static class CoverageService
     /// MSBuild + dotnet vstest + dotnet-coverage.
     /// </summary>
     private static async Task<CoverageResult> RunLegacyCoverageAsync(
-        string csprojPath, string? filter, CancellationToken cancellationToken)
+        string csprojPath, string? filter, int timeoutSeconds, CancellationToken cancellationToken)
     {
         var msbuild = MsBuildLocator.FindMsBuild();
         if (msbuild is null)
@@ -149,6 +155,17 @@ public static class CoverageService
                 "Install Visual Studio or Build Tools for Visual Studio.", null);
 
         var workingDirectory = Path.GetDirectoryName(csprojPath)!;
+
+        using var timeoutCts = timeoutSeconds > 0
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : null;
+        timeoutCts?.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+        var linkedToken = timeoutCts?.Token ?? cancellationToken;
+
+        string TimeoutOrCancelled() =>
+            timeoutSeconds > 0 && !cancellationToken.IsCancellationRequested
+                ? $"Coverage collection timed out after {timeoutSeconds} seconds."
+                : "Coverage collection was cancelled.";
 
         // Build the project
         var buildArgs = $"\"{csprojPath}\" /nologo /v:minimal";
@@ -173,11 +190,11 @@ public static class CoverageService
             buildProcess.Start();
             buildProcess.BeginOutputReadLine();
             buildProcess.BeginErrorReadLine();
-            try { await buildProcess.WaitForExitAsync(cancellationToken); }
+            try { await buildProcess.WaitForExitAsync(linkedToken); }
             catch (OperationCanceledException)
             {
                 try { buildProcess.Kill(entireProcessTree: true); } catch { }
-                return new CoverageResult(false, "Coverage collection was cancelled.", null);
+                return new CoverageResult(false, TimeoutOrCancelled(), null);
             }
             if (buildProcess.ExitCode != 0)
                 return new CoverageResult(false,
@@ -226,11 +243,11 @@ public static class CoverageService
             process.Start();
             process.BeginOutputReadLine();
             process.BeginErrorReadLine();
-            try { await process.WaitForExitAsync(cancellationToken); }
+            try { await process.WaitForExitAsync(linkedToken); }
             catch (OperationCanceledException)
             {
                 try { process.Kill(entireProcessTree: true); } catch { }
-                return new CoverageResult(false, "Coverage collection was cancelled.", null);
+                return new CoverageResult(false, TimeoutOrCancelled(), null);
             }
 
             if (!File.Exists(outputPath))

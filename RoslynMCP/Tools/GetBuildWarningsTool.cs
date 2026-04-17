@@ -10,18 +10,29 @@ public static class GetBuildWarningsTool
 {
     [McpServerTool, Description(
         "Get all build warnings of a specific warning code (e.g. CS0414) from the most recent " +
-        "BuildProject run for the given project. Run BuildProject first to populate the warning cache.")]
+        "BuildProject run. If projectPath is omitted, uses the last project that was built.")]
     public static string GetBuildWarnings(
-        [Description("Path to the .csproj, .sln file, or a source file in the project. " +
-                     "Must match the path used in the preceding BuildProject call.")]
-        string projectPath,
         [Description("Warning code to retrieve, e.g. CS0414 or CS1066.")]
         string warningCode,
-        BuildWarningsStore warningsStore)
+        BuildWarningsStore warningsStore,
+        [Description("Path to the .csproj, .sln file, or a source file in the project. " +
+                     "If omitted, uses the last project built with BuildProject.")]
+        string? projectPath = null)
     {
-        var resolved = BuildProjectTool.ResolveBuildTarget(projectPath);
-        if (resolved.StartsWith("Error:", StringComparison.Ordinal))
-            return resolved;
+        string resolved;
+        if (string.IsNullOrWhiteSpace(projectPath))
+        {
+            var last = warningsStore.LastBuiltProject;
+            if (last is null)
+                return "No cached build data found. Run BuildProject first, then call GetBuildWarnings.";
+            resolved = last;
+        }
+        else
+        {
+            resolved = BuildProjectTool.ResolveBuildTarget(projectPath);
+            if (resolved.StartsWith("Error:", StringComparison.Ordinal))
+                return resolved;
+        }
 
         var warnings = warningsStore.GetWarnings(resolved, warningCode);
 

@@ -327,7 +327,7 @@ internal static class BackgroundTaskHelper
     {
         try
         {
-            var result = await CoverageService.RunCoverageAsync(csprojPath, filter, CancellationToken.None);
+            var result = await CoverageService.RunCoverageAsync(csprojPath, filter, 300, CancellationToken.None);
             taskStore.Complete(taskId, result.Message, result.Success ? 0 : 1);
         }
         catch (Exception ex)
