@@ -19,6 +19,7 @@ internal static class FixturePaths
     public static string OutlineShowcaseFile => Path.Combine(SampleProjectDir, "OutlineShowcase.cs");
     public static string TextUtilitiesFile => Path.Combine(SampleProjectDir, "TextUtilities.cs");
     public static string WarningsFile => Path.Combine(SampleProjectDir, "Warnings.cs");
+    public static string VarUsagesFile => Path.Combine(SampleProjectDir, "VarUsages.cs");
     public static string BrokenProjectDir => Path.Combine(s_fixturesRoot, "BrokenProject");
     public static string BrokenProjectFile => Path.Combine(BrokenProjectDir, "BrokenProject.csproj");
     public static string BrokenSyntaxFile => Path.Combine(BrokenProjectDir, "BrokenSyntax.cs");
