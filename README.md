@@ -221,13 +221,15 @@ Example with Razor disabled:
 
 | Tool | Description |
 |------|-------------|
-| **BuildProject** | Build a .NET project or solution and return structured errors and warnings. Set `background: true` to build in the background. |
+| **BuildProject** | Build a .NET project or solution and return structured errors and warnings. Warnings are grouped by code with counts. Set `background: true` to build in the background. |
+| **GetBuildWarnings** | Retrieve all warnings for a specific warning code (e.g. `CS0414`) from the last build. Returns each warning's file, line, and message. `projectPath` defaults to the last built project. |
 
 ### Refactoring
 
 | Tool | Description |
 |------|-------------|
 | **RenameSymbol** | Rename a symbol and all references across the project, including ASPX/ASCX and Razor files. Supports dry-run preview and file renames. |
+| **ExpandVarTypes** | Return a method's source with all `var` declarations replaced by their resolved explicit types. Read-only; uses Roslyn's semantic model. Supports `hintLine` to disambiguate overloads. |
 
 ### Testing & Coverage
 
