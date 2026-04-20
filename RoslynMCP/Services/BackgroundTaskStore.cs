@@ -32,7 +32,16 @@ public sealed class BackgroundTaskStore
     public string CreateTask(TaskKind kind, string description)
     {
         EvictExpired();
-        var id = $"bg-{kind.ToString().ToLowerInvariant()}-{DateTime.UtcNow:HHmmss}-{Guid.NewGuid().ToString()[..4]}";
+        var slug = GenerateWordSlug();
+        var id = $"bg-{kind.ToString().ToLowerInvariant()}-{slug}";
+
+        // Handle the unlikely collision
+        while (_tasks.ContainsKey(id))
+        {
+            slug = GenerateWordSlug();
+            id = $"bg-{kind.ToString().ToLowerInvariant()}-{slug}";
+        }
+
         var task = new BackgroundTask(id, kind, description, DateTime.UtcNow);
         _tasks[id] = task;
         return id;
@@ -106,4 +115,28 @@ public sealed class BackgroundTaskStore
             }
         }
     }
+
+    private static string GenerateWordSlug()
+    {
+        var adj = Adjectives[Random.Shared.Next(Adjectives.Length)];
+        var noun = Nouns[Random.Shared.Next(Nouns.Length)];
+        return $"{adj}-{noun}";
+    }
+
+    // 32 adjectives × 32 nouns = 1024 combinations — plenty for background tasks
+    private static readonly string[] Adjectives =
+    [
+        "bold", "calm", "cool", "dark", "fast", "fond", "glad", "gold",
+        "keen", "kind", "late", "lean", "live", "mild", "neat", "nice",
+        "pale", "pure", "rare", "rich", "safe", "slim", "soft", "tall",
+        "tidy", "trim", "true", "vast", "warm", "wide", "wild", "wise"
+    ];
+
+    private static readonly string[] Nouns =
+    [
+        "arch", "bark", "beam", "bell", "bird", "bolt", "claw", "coin",
+        "crow", "dawn", "deer", "dove", "drum", "dusk", "fawn", "fern",
+        "flag", "frog", "gate", "gull", "hare", "hawk", "hill", "iris",
+        "jade", "kite", "lake", "leaf", "lynx", "mist", "moth", "plum"
+    ];
 }
