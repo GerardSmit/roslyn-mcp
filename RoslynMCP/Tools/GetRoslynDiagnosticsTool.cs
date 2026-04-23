@@ -24,6 +24,7 @@ public static class GetRoslynDiagnosticsTool
     public static async Task<string> GetRoslynDiagnostics(
         [Description("Path to the C# file, ASPX/ASCX file, Razor file, or .csproj project. " +
                      "Separate multiple paths with semicolons.")] string filePath,
+        IOutputFormatter fmt,
         [Description("Severity filter: error, warning, info, hidden, or all (default: all).")] string severityFilter = "all",
         [Description("Run analyzers (default: true).")] bool runAnalyzers = true,
         [Description("Maximum number of diagnostics to return. Default: 50.")] int maxResults = 50,
@@ -38,7 +39,7 @@ public static class GetRoslynDiagnosticsTool
             var paths = filePath.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
             if (paths.Length == 1)
-                return await GetSingleFileDiagnostics(paths[0], severityFilter, runAnalyzers, maxResults, handlers, cancellationToken);
+                return await GetSingleFileDiagnostics(paths[0], severityFilter, runAnalyzers, maxResults, fmt, handlers, cancellationToken);
 
             // Multi-file mode
             var sb = new StringBuilder();
@@ -47,7 +48,7 @@ public static class GetRoslynDiagnosticsTool
                 if (sb.Length > 0)
                     sb.AppendLine();
 
-                sb.Append(await GetSingleFileDiagnostics(path, severityFilter, runAnalyzers, maxResults, handlers, cancellationToken));
+                sb.Append(await GetSingleFileDiagnostics(path, severityFilter, runAnalyzers, maxResults, fmt, handlers, cancellationToken));
             }
             return sb.ToString();
         }
@@ -61,7 +62,7 @@ public static class GetRoslynDiagnosticsTool
 
     private static async Task<string> GetSingleFileDiagnostics(
         string filePath, string severityFilter, bool runAnalyzers, int maxResults,
-        IEnumerable<IDiagnosticsHandler>? handlers, CancellationToken cancellationToken)
+        IOutputFormatter fmt, IEnumerable<IDiagnosticsHandler>? handlers, CancellationToken cancellationToken)
     {
         string systemPath = PathHelper.NormalizePath(filePath);
 
@@ -71,16 +72,16 @@ public static class GetRoslynDiagnosticsTool
             foreach (var handler in handlers)
             {
                 if (handler.CanHandle(systemPath))
-                    return await handler.ValidateAsync(systemPath, cancellationToken);
+                    return await handler.ValidateAsync(systemPath, fmt, cancellationToken);
             }
         }
 
         // Project-wide diagnostics (.csproj path)
         if (systemPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase))
-            return await GetProjectDiagnosticsAsync(systemPath, severityFilter, maxResults, cancellationToken);
+            return await GetProjectDiagnosticsAsync(systemPath, severityFilter, maxResults, fmt, cancellationToken);
 
         // Single C# file diagnostics
-        return await GetFileDiagnosticsAsync(systemPath, severityFilter, runAnalyzers, maxResults, cancellationToken);
+        return await GetFileDiagnosticsAsync(systemPath, severityFilter, runAnalyzers, maxResults, fmt, cancellationToken);
     }
 
     /// <summary>
@@ -88,7 +89,7 @@ public static class GetRoslynDiagnosticsTool
     /// </summary>
     private static async Task<string> GetFileDiagnosticsAsync(
         string systemPath, string severityFilter, bool runAnalyzers, int maxResults,
-        CancellationToken cancellationToken)
+        IOutputFormatter fmt, CancellationToken cancellationToken)
     {
         if (!PathHelper.TryParseSeverityFilter(severityFilter, out DiagnosticSeverity? filter))
             return $"Error: Invalid severity filter '{severityFilter}'. Use: error, warning, info, hidden, or all.";
@@ -107,7 +108,7 @@ public static class GetRoslynDiagnosticsTool
         if (filter is not null)
             diagnostics = diagnostics.Where(d => d.Severity == filter.Value).ToList();
 
-        return FormatFileDiagnostics(diagnostics, fileCtx.SystemPath, fileCtx.Project.FilePath!, maxResults);
+        return FormatFileDiagnostics(diagnostics, fileCtx.SystemPath, fileCtx.Project.FilePath!, maxResults, fmt);
     }
 
     /// <summary>
@@ -115,7 +116,7 @@ public static class GetRoslynDiagnosticsTool
     /// </summary>
     private static async Task<string> GetProjectDiagnosticsAsync(
         string csprojPath, string severityFilter, int maxResults,
-        CancellationToken cancellationToken)
+        IOutputFormatter fmt, CancellationToken cancellationToken)
     {
         if (!File.Exists(csprojPath))
             return $"Error: Project file '{csprojPath}' not found.";
@@ -138,7 +139,7 @@ public static class GetRoslynDiagnosticsTool
         if (filter is not null)
             diagnostics = diagnostics.Where(d => d.Severity == filter.Value).ToList();
 
-        return FormatProjectDiagnostics(diagnostics, project, csprojPath, maxResults);
+        return FormatProjectDiagnostics(diagnostics, project, csprojPath, maxResults, fmt);
     }
 
     /// <summary>
@@ -175,69 +176,60 @@ public static class GetRoslynDiagnosticsTool
     }
 
     private static string FormatFileDiagnostics(
-        List<Diagnostic> diagnostics, string filePath, string projectPath, int maxResults)
+        List<Diagnostic> diagnostics, string filePath, string projectPath, int maxResults, IOutputFormatter fmt)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"# Diagnostics: {Path.GetFileName(filePath)}");
-        sb.AppendLine();
+        fmt.AppendHeader(sb, $"Diagnostics: {Path.GetFileName(filePath)}");
 
         int errors = diagnostics.Count(d => d.Severity == DiagnosticSeverity.Error);
         int warnings = diagnostics.Count(d => d.Severity == DiagnosticSeverity.Warning);
         int info = diagnostics.Count(d => d.Severity == DiagnosticSeverity.Info);
 
-        sb.AppendLine(
-            $"**Project**: {Path.GetFileName(projectPath)} | " +
-            $"**Errors**: {errors} | **Warnings**: {warnings} | **Info**: {info}");
-        sb.AppendLine();
+        fmt.AppendField(sb, "Project", Path.GetFileName(projectPath));
+        fmt.AppendField(sb, "Errors", errors);
+        fmt.AppendField(sb, "Warnings", warnings);
+        fmt.AppendField(sb, "Info", info);
 
         if (diagnostics.Count == 0)
         {
-            sb.AppendLine("No diagnostics found.");
+            fmt.AppendEmpty(sb, "No diagnostics found.");
             return sb.ToString();
         }
 
         var ordered = diagnostics.Take(maxResults).ToList();
-
-        sb.AppendLine("| Severity | ID | Line:Col | Message |");
-        sb.AppendLine("|----------|------|----------|---------|");
-
+        fmt.BeginTable(sb, "Diagnostics", ["Severity", "ID", "Line:Col", "Message"], diagnostics.Count);
         foreach (var d in ordered)
         {
             var span = d.Location.GetLineSpan();
             int line = span.StartLinePosition.Line + 1;
             int col = span.StartLinePosition.Character + 1;
-            string severity = FormatSeverity(d.Severity);
-            sb.AppendLine($"| {severity} | {d.Id} | {line}:{col} | {MarkdownFormatter.EscapeTableCell(d.GetMessage())} |");
+            fmt.AddRow(sb, FormatSeverity(d.Severity), d.Id, $"{line}:{col}", d.GetMessage());
         }
-
-        if (diagnostics.Count > maxResults)
-        {
-            sb.AppendLine();
-            sb.AppendLine($"_Showing first {maxResults} of {diagnostics.Count} diagnostics. Use `maxResults` to see more._");
-        }
+        fmt.EndTable(sb);
+        fmt.AppendTruncation(sb, ordered.Count, diagnostics.Count);
 
         return sb.ToString();
     }
 
     private static string FormatProjectDiagnostics(
-        List<Diagnostic> diagnostics, Project project, string projectPath, int maxResults)
+        List<Diagnostic> diagnostics, Project project, string projectPath, int maxResults, IOutputFormatter fmt)
     {
         var sb = new StringBuilder();
         string? projectDir = Path.GetDirectoryName(projectPath);
 
-        sb.AppendLine($"# Project Diagnostics: {project.Name}");
-        sb.AppendLine();
+        fmt.AppendHeader(sb, $"Project Diagnostics: {project.Name}");
 
         int errors = diagnostics.Count(d => d.Severity == DiagnosticSeverity.Error);
         int warnings = diagnostics.Count(d => d.Severity == DiagnosticSeverity.Warning);
         int info = diagnostics.Count(d => d.Severity == DiagnosticSeverity.Info);
 
-        sb.AppendLine($"**Errors**: {errors} | **Warnings**: {warnings} | **Info**: {info}");
-        sb.AppendLine();
+        fmt.AppendField(sb, "Errors", errors);
+        fmt.AppendField(sb, "Warnings", warnings);
+        fmt.AppendField(sb, "Info", info);
 
         if (diagnostics.Count == 0)
         {
-            sb.AppendLine("No diagnostics found. Project compiles cleanly.");
+            fmt.AppendEmpty(sb, "No diagnostics found. Project compiles cleanly.");
             return sb.ToString();
         }
 
@@ -247,8 +239,7 @@ public static class GetRoslynDiagnosticsTool
             .ThenByDescending(g => g.Count())
             .ToList();
 
-        sb.AppendLine($"**Files with issues**: {byFile.Count}");
-        sb.AppendLine();
+        fmt.AppendField(sb, "Files with issues", byFile.Count);
 
         var ordered = diagnostics
             .OrderBy(d => d.Severity)
@@ -257,27 +248,24 @@ public static class GetRoslynDiagnosticsTool
             .Take(maxResults)
             .ToList();
 
-        sb.AppendLine("| Severity | ID | File | Line | Message |");
-        sb.AppendLine("|----------|------|------|------|---------|");
-
+        fmt.BeginTable(sb, "Diagnostics", ["Severity", "ID", "File", "Line", "Message"], diagnostics.Count);
         foreach (var d in ordered)
         {
             var span = d.Location.GetLineSpan();
             int line = span.StartLinePosition.Line + 1;
-            string severity = FormatSeverity(d.Severity);
             string file = projectDir is not null
                 ? Path.GetRelativePath(projectDir, span.Path)
                 : Path.GetFileName(span.Path);
-
-            sb.AppendLine(
-                $"| {severity} | {d.Id} | {MarkdownFormatter.EscapeTableCell(file)} | {line} | {MarkdownFormatter.EscapeTableCell(d.GetMessage())} |");
+            fmt.BeginRow(sb);
+            fmt.WriteCell(sb, FormatSeverity(d.Severity));
+            fmt.WriteCell(sb, d.Id);
+            fmt.WriteCell(sb, file);
+            fmt.WriteCell(sb, line);
+            fmt.WriteCell(sb, d.GetMessage());
+            fmt.EndRow(sb);
         }
-
-        if (diagnostics.Count > maxResults)
-        {
-            sb.AppendLine();
-            sb.AppendLine($"_Showing first {maxResults} of {diagnostics.Count} diagnostics. Use `maxResults` to see more._");
-        }
+        fmt.EndTable(sb);
+        fmt.AppendTruncation(sb, ordered.Count, diagnostics.Count);
 
         return sb.ToString();
     }

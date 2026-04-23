@@ -176,6 +176,7 @@ Use the following server configuration:
 | `--no-razor` | Disable Razor (.razor/.cshtml) support. |
 | `--no-debugger` | Disable all debugger tools (see [Debugging](#debugging)). |
 | `--no-profiling` | Disable all profiling tools (see [Profiling](#profiling)). |
+| `--toon` | Use TOON (Token-Optimized Object Notation) output format instead of markdown. Reduces token usage. |
 | `--db <alias>=<provider>:<connstr>` | Register a database connection. Repeatable. Providers: `psql`, `mssql`, `sqlite`. See [Databases](#databases). |
 | `--no-db` | Disable all database tools. |
 

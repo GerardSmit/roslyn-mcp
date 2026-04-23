@@ -21,20 +21,51 @@ public sealed class ToonFormatter : IOutputFormatter
 
     public void AppendTable(StringBuilder sb, string name, string[] columns, List<string[]> rows, int? totalCount = null)
     {
-        int count = totalCount ?? rows.Count;
-        sb.AppendLine($"{name}[{count}]{{{string.Join(',', columns)}}}:");
-
+        BeginTable(sb, name, columns, totalCount ?? rows.Count);
         foreach (var row in rows)
-        {
-            sb.Append("  ");
-            for (int i = 0; i < row.Length; i++)
-            {
-                if (i > 0) sb.Append(',');
-                sb.Append(Escape(row[i]));
-            }
-            sb.AppendLine();
-        }
+            AddRow(sb, row);
+        EndTable(sb);
     }
+
+    public void BeginTable(StringBuilder sb, string name, string[] columns, int? totalCount = null)
+    {
+        if (totalCount is not null)
+            sb.AppendLine($"{name}[{totalCount}]{{{string.Join(',', columns)}}}:");
+        else
+            sb.AppendLine($"{name}{{{string.Join(',', columns)}}}:");
+    }
+
+    private int _cellIndex;
+
+    public void AddRow(StringBuilder sb, params ReadOnlySpan<string> values)
+    {
+        BeginRow(sb);
+        foreach (var val in values)
+            WriteCell(sb, val);
+        EndRow(sb);
+    }
+
+    public void BeginRow(StringBuilder sb)
+    {
+        sb.Append("  ");
+        _cellIndex = 0;
+    }
+
+    public void WriteCell(StringBuilder sb, string value)
+    {
+        if (_cellIndex++ > 0) sb.Append(',');
+        sb.Append(Escape(value));
+    }
+
+    public void WriteCell(StringBuilder sb, int value)
+    {
+        if (_cellIndex++ > 0) sb.Append(',');
+        sb.Append(value);
+    }
+
+    public void EndRow(StringBuilder sb) => sb.AppendLine();
+
+    public void EndTable(StringBuilder sb) { }
 
     public void AppendHints(StringBuilder sb, params string[] hints)
     {

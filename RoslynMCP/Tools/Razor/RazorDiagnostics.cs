@@ -13,7 +13,7 @@ internal class RazorDiagnostics : IDiagnosticsHandler
     public bool CanHandle(string filePath) => RazorSourceMappingService.IsRazorFile(filePath);
 
     public async Task<string> ValidateAsync(
-        string filePath, CancellationToken cancellationToken)
+        string filePath, IOutputFormatter fmt, CancellationToken cancellationToken)
     {
         if (!File.Exists(filePath))
             return $"Error: File {filePath} does not exist.";
@@ -53,24 +53,27 @@ internal class RazorDiagnostics : IDiagnosticsHandler
 
         if (mappedDiags.Count == 0)
         {
-            sb.AppendLine("No diagnostics found for this Razor file.");
+            fmt.AppendEmpty(sb, "No diagnostics found for this Razor file.");
         }
         else
         {
             int errors = mappedDiags.Count(d => d.Diagnostic.Severity == DiagnosticSeverity.Error);
             int warnings = mappedDiags.Count(d => d.Diagnostic.Severity == DiagnosticSeverity.Warning);
-            sb.AppendLine($"**Errors**: {errors} | **Warnings**: {warnings}");
-            sb.AppendLine();
-            sb.AppendLine("| Severity | ID | Razor Line | Message |");
-            sb.AppendLine("|----------|------|------------|---------|");
+            fmt.AppendField(sb, "Errors", errors);
+            fmt.AppendField(sb, "Warnings", warnings);
 
+            fmt.BeginTable(sb, "Diagnostics", ["Severity", "ID", "Razor Line", "Message"], mappedDiags.Count);
             foreach (var mapped in mappedDiags.OrderBy(d => d.MappedLocation!.Line))
             {
                 var d = mapped.Diagnostic;
-                string severity = GetRoslynDiagnosticsTool.FormatSeverity(d.Severity);
-                sb.AppendLine(
-                    $"| {severity} | {d.Id} | {mapped.MappedLocation!.Line} | {MarkdownFormatter.EscapeTableCell(d.GetMessage())} |");
+                fmt.BeginRow(sb);
+                fmt.WriteCell(sb, GetRoslynDiagnosticsTool.FormatSeverity(d.Severity));
+                fmt.WriteCell(sb, d.Id);
+                fmt.WriteCell(sb, mapped.MappedLocation!.Line);
+                fmt.WriteCell(sb, d.GetMessage());
+                fmt.EndRow(sb);
             }
+            fmt.EndTable(sb);
         }
 
         return sb.ToString();

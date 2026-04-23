@@ -36,6 +36,7 @@ public static class DiscoverTestsTool
     public static async Task<string> DiscoverTests(
         [Description("Path to the test project (.csproj) or a source file in the test project.")]
         string projectPath,
+        IOutputFormatter fmt,
         [Description("Optional class name filter (partial match). Only returns tests from matching classes.")]
         string? className = null,
         CancellationToken cancellationToken = default)
@@ -108,18 +109,14 @@ public static class DiscoverTestsTool
             }
 
             var sb = new StringBuilder();
-            sb.AppendLine($"# Test Discovery: {Path.GetFileNameWithoutExtension(csprojPath)}");
-            sb.AppendLine();
-            sb.AppendLine($"Found **{tests.Count}** test method(s)");
-            sb.AppendLine();
+            fmt.AppendHeader(sb, $"Test Discovery: {Path.GetFileNameWithoutExtension(csprojPath)}");
+            fmt.AppendField(sb, "Tests found", tests.Count);
 
             foreach (var group in tests.GroupBy(t => t.ClassName).OrderBy(g => g.Key))
             {
-                sb.AppendLine($"## {group.Key} ({group.First().Framework})");
-                sb.AppendLine();
-                sb.AppendLine("| # | Method | File | Lines |");
-                sb.AppendLine("|---|--------|------|-------|");
+                fmt.AppendHeader(sb, $"{group.Key} ({group.First().Framework})", 2);
 
+                fmt.BeginTable(sb, group.Key, ["#", "Method", "File", "Lines"], group.Count());
                 int i = 1;
                 foreach (var test in group.OrderBy(t => t.Line))
                 {
@@ -128,14 +125,18 @@ public static class DiscoverTestsTool
                         ? Path.GetRelativePath(projectDir, test.FilePath)
                         : test.FilePath;
                     string lineRange = test.EndLine > test.Line ? $"{test.Line}–{test.EndLine}" : $"{test.Line}";
-                    sb.AppendLine($"| {i++} | {MarkdownFormatter.EscapeTableCell(test.MethodName)} | {relPath} | {lineRange} |");
+                    fmt.BeginRow(sb);
+                    fmt.WriteCell(sb, i++);
+                    fmt.WriteCell(sb, test.MethodName);
+                    fmt.WriteCell(sb, relPath);
+                    fmt.WriteCell(sb, lineRange);
+                    fmt.EndRow(sb);
                 }
-                sb.AppendLine();
+                fmt.EndTable(sb);
             }
 
-            // Summary by framework
             var frameworks = tests.GroupBy(t => t.Framework).OrderBy(g => g.Key);
-            sb.AppendLine("**Frameworks:** " + string.Join(", ", frameworks.Select(g => $"{g.Key} ({g.Count()})")));
+            fmt.AppendField(sb, "Frameworks", string.Join(", ", frameworks.Select(g => $"{g.Key} ({g.Count()})")));
 
             return sb.ToString();
         }

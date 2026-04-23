@@ -26,6 +26,7 @@ public static class CallHierarchyTool
             "Code snippet with [| |] markers around the target, " +
             "e.g. 'void [|ProcessData|](int x)'.")]
         string markupSnippet,
+        IOutputFormatter fmt,
         [Description("Direction: 'callers' (who calls this?), 'callees' (what does this call?), or 'both'. Default: 'both'.")]
         string direction = "both",
         [Description("Approximate line number near the target snippet. Used to pick the closest match when the snippet appears multiple times.")]
@@ -59,12 +60,12 @@ public static class CallHierarchyTool
 
             if (showCallers)
             {
-                await AppendCallersAsync(sb, symbol, solution, ctx.ProjectDir, cancellationToken);
+                await AppendCallersAsync(sb, symbol, solution, ctx.ProjectDir, fmt, cancellationToken);
             }
 
             if (showCallees)
             {
-                await AppendCalleesAsync(sb, symbol, ctx.Document, ctx.ProjectDir, cancellationToken);
+                await AppendCalleesAsync(sb, symbol, ctx.Document, ctx.ProjectDir, fmt, cancellationToken);
             }
 
             return sb.ToString();
@@ -82,10 +83,10 @@ public static class CallHierarchyTool
         ISymbol symbol,
         Solution solution,
         string? projectDir,
+        IOutputFormatter fmt,
         CancellationToken cancellationToken)
     {
-        sb.AppendLine("## Callers (↑ Who calls this?)");
-        sb.AppendLine();
+        fmt.AppendHeader(sb, "Callers (Who calls this?)", 2);
 
         var callers = await SymbolFinder.FindCallersAsync(
             symbol, solution, cancellationToken);
@@ -99,16 +100,11 @@ public static class CallHierarchyTool
 
         if (callerList.Count == 0)
         {
-            sb.AppendLine("No callers found in the current solution.");
-            sb.AppendLine();
+            fmt.AppendEmpty(sb, "No callers found in the current solution.");
             return;
         }
 
-        sb.AppendLine($"Found {callerList.Count} caller(s):");
-        sb.AppendLine();
-        sb.AppendLine("| Caller | Containing Type | File | Line |");
-        sb.AppendLine("|--------|-----------------|------|------|");
-
+        fmt.BeginTable(sb, "Callers", ["Caller", "Containing Type", "File", "Line"], callerList.Count);
         foreach (var caller in callerList)
         {
             var callingSymbol = caller.CallingSymbol;
@@ -123,15 +119,19 @@ public static class CallHierarchyTool
                     ? Path.GetRelativePath(projectDir, lineSpan.Path)
                     : lineSpan.Path;
                 int line = lineSpan.StartLinePosition.Line + 1;
-                sb.AppendLine($"| {MarkdownFormatter.EscapeTableCell(callerName)} | {containingType} | {MarkdownFormatter.EscapeTableCell(displayPath)} | {line} |");
+                fmt.BeginRow(sb);
+                fmt.WriteCell(sb, callerName);
+                fmt.WriteCell(sb, containingType);
+                fmt.WriteCell(sb, displayPath);
+                fmt.WriteCell(sb, line);
+                fmt.EndRow(sb);
             }
             else
             {
-                sb.AppendLine($"| {MarkdownFormatter.EscapeTableCell(callerName)} | {containingType} | (external) | - |");
+                fmt.AddRow(sb, callerName, containingType, "(external)", "-");
             }
         }
-
-        sb.AppendLine();
+        fmt.EndTable(sb);
     }
 
     private static async Task AppendCalleesAsync(
@@ -139,6 +139,7 @@ public static class CallHierarchyTool
         ISymbol symbol,
         Document document,
         string? projectDir,
+        IOutputFormatter fmt,
         CancellationToken cancellationToken)
     {
         sb.AppendLine("## Callees (↓ What does this call?)");
@@ -205,19 +206,14 @@ public static class CallHierarchyTool
             return;
         }
 
-        sb.AppendLine($"Found {invocations.Count} callee(s):");
-        sb.AppendLine();
-        sb.AppendLine("| Callee | Kind | Containing Type |");
-        sb.AppendLine("|--------|------|-----------------|");
-
+        fmt.BeginTable(sb, "Callees", ["Callee", "Kind", "Containing Type"], invocations.Count);
         foreach (var callee in invocations.OrderBy(s => s.ContainingType?.Name).ThenBy(s => s.Name))
         {
             string calleeName = callee.ToDisplayString();
             string kind = callee.Kind.ToString();
             string containingType = callee.ContainingType?.ToDisplayString() ?? "-";
-            sb.AppendLine($"| {MarkdownFormatter.EscapeTableCell(calleeName)} | {kind} | {MarkdownFormatter.EscapeTableCell(containingType)} |");
+            fmt.AddRow(sb, [calleeName, kind, containingType]);
         }
-
-        sb.AppendLine();
+        fmt.EndTable(sb);
     }
 }

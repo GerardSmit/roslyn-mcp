@@ -16,6 +16,7 @@ public static class ListProjectsTool
         [Description(
             "Path to a .sln/.slnx file, .csproj file, any source file, or a directory to search for projects.")]
         string path,
+        IOutputFormatter fmt,
         CancellationToken cancellationToken = default)
     {
         try
@@ -27,31 +28,29 @@ public static class ListProjectsTool
 
             // If it's a solution file, parse it for project entries
             if (PathHelper.IsSolutionFile(systemPath) && File.Exists(systemPath))
-            {
-                if (systemPath.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase))
-                    return FormatSlnxProjects(systemPath);
-                return await FormatSolutionProjectsAsync(systemPath, cancellationToken);
-            }
+                return FormatProjects(fmt, Path.GetFileName(systemPath),
+                    await ParseSolutionAsync(systemPath, cancellationToken));
 
             // If it's a file or directory, walk up to find the nearest .sln or .csproj
             if (File.Exists(systemPath) || Directory.Exists(systemPath))
             {
-                // Try to find a .sln by walking up the directory tree
+                // Try to find a solution by walking up the directory tree
                 var slnPath = PathHelper.FindNearestSolution(systemPath);
                 if (slnPath is not null)
-                    return await FormatSolutionProjectsAsync(slnPath, cancellationToken);
+                    return FormatProjects(fmt, Path.GetFileName(slnPath),
+                        await ParseSolutionAsync(slnPath, cancellationToken));
 
-                // No .sln found — try to find a .csproj by walking up
+                // No solution found — try to find a .csproj by walking up
                 var csprojPath = PathHelper.ResolveCsprojPath(systemPath);
                 if (csprojPath is not null)
                 {
                     var projectDir = Path.GetDirectoryName(csprojPath)!;
-                    return FormatDiscoveredProjects(projectDir);
+                    return FormatProjects(fmt, projectDir, DiscoverProjects(projectDir));
                 }
 
                 // Fallback: list .csproj files under the given path (if directory)
                 var searchDir = File.Exists(systemPath) ? Path.GetDirectoryName(systemPath)! : systemPath;
-                return FormatDiscoveredProjects(searchDir);
+                return FormatProjects(fmt, searchDir, DiscoverProjects(searchDir));
             }
 
             return $"Error: Path '{path}' does not exist.";
@@ -64,20 +63,47 @@ public static class ListProjectsTool
         }
     }
 
-    private static async Task<string> FormatSolutionProjectsAsync(
-        string slnPath, CancellationToken cancellationToken)
+    private static string FormatProjects(
+        IOutputFormatter fmt, string label, List<(string Name, string RelativePath, string Type)> projects)
     {
         var sb = new StringBuilder();
-        var slnDir = Path.GetDirectoryName(slnPath)!;
-        sb.AppendLine($"# Solution: {Path.GetFileName(slnPath)}");
-        sb.AppendLine();
+        fmt.AppendHeader(sb, $"Solution: {label}");
 
-        var lines = await File.ReadAllLinesAsync(slnPath, cancellationToken);
+        if (projects.Count == 0)
+        {
+            fmt.AppendEmpty(sb, "No projects found.");
+            return sb.ToString();
+        }
+
+        var columns = new[] { "#", "Project", "Path", "Type" };
+        var rows = new List<string[]>();
+        for (int i = 0; i < projects.Count; i++)
+        {
+            var (name, relativePath, type) = projects[i];
+            rows.Add([(i + 1).ToString(), name, relativePath, type]);
+        }
+
+        fmt.AppendTable(sb, "Projects", columns, rows);
+        return sb.ToString();
+    }
+
+    private static async Task<List<(string Name, string RelativePath, string Type)>> ParseSolutionAsync(
+        string solutionPath, CancellationToken cancellationToken)
+    {
+        if (solutionPath.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase))
+            return ParseSlnx(solutionPath);
+        return await ParseSlnAsync(solutionPath, cancellationToken);
+    }
+
+    private static async Task<List<(string Name, string RelativePath, string Type)>> ParseSlnAsync(
+        string slnPath, CancellationToken cancellationToken)
+    {
+        var slnDir = Path.GetDirectoryName(slnPath)!;
         var projects = new List<(string Name, string RelativePath, string Type)>();
 
+        var lines = await File.ReadAllLinesAsync(slnPath, cancellationToken);
         foreach (var line in lines)
         {
-            // Format: Project("{FAE04EC0-...}") = "Name", "Path\To\Project.csproj", "{GUID}"
             if (!line.StartsWith("Project(", StringComparison.Ordinal)) continue;
 
             var parts = line.Split('"');
@@ -86,44 +112,37 @@ public static class ListProjectsTool
             string name = parts[3];
             string relativePath = parts[5];
 
-            // Skip solution folders
-            if (!relativePath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) &&
-                !relativePath.EndsWith(".vbproj", StringComparison.OrdinalIgnoreCase) &&
-                !relativePath.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase))
-                continue;
+            if (!IsProjectFile(relativePath)) continue;
 
             string fullPath = Path.GetFullPath(Path.Combine(slnDir, relativePath.Replace('\\', Path.DirectorySeparatorChar)));
-            string type = DetectProjectType(fullPath);
-
-            projects.Add((name, relativePath.Replace('\\', '/'), type));
+            projects.Add((name, relativePath.Replace('\\', '/'), DetectProjectType(fullPath)));
         }
 
-        if (projects.Count == 0)
-        {
-            sb.AppendLine("No projects found in the solution.");
-            return sb.ToString();
-        }
-
-        sb.AppendLine($"Found **{projects.Count}** project(s):");
-        sb.AppendLine();
-        sb.AppendLine("| # | Project | Path | Type |");
-        sb.AppendLine("|---|---------|------|------|");
-
-        int index = 1;
-        foreach (var (name, relativePath, type) in projects)
-        {
-            sb.AppendLine($"| {index} | {name} | {relativePath} | {type} |");
-            index++;
-        }
-
-        return sb.ToString();
+        return projects;
     }
 
-    private static string FormatDiscoveredProjects(string directory)
+    private static List<(string Name, string RelativePath, string Type)> ParseSlnx(string slnxPath)
     {
-        var sb = new StringBuilder();
-        sb.AppendLine($"# Projects in: {directory}");
-        sb.AppendLine();
+        var slnDir = Path.GetDirectoryName(slnxPath)!;
+        var projects = new List<(string Name, string RelativePath, string Type)>();
+        var doc = XDocument.Load(slnxPath);
+
+        foreach (var elem in doc.Descendants("Project"))
+        {
+            var pathAttr = elem.Attribute("Path")?.Value;
+            if (string.IsNullOrEmpty(pathAttr) || !IsProjectFile(pathAttr)) continue;
+
+            string fullPath = Path.GetFullPath(Path.Combine(slnDir, pathAttr.Replace('/', Path.DirectorySeparatorChar)));
+            string name = Path.GetFileNameWithoutExtension(pathAttr);
+            projects.Add((name, pathAttr.Replace('\\', '/'), DetectProjectType(fullPath)));
+        }
+
+        return projects;
+    }
+
+    private static List<(string Name, string RelativePath, string Type)> DiscoverProjects(string directory)
+    {
+        var projects = new List<(string Name, string RelativePath, string Type)>();
 
         var csprojFiles = Directory.GetFiles(directory, "*.csproj", SearchOption.AllDirectories)
             .Where(f =>
@@ -133,79 +152,22 @@ public static class ListProjectsTool
                 return !first.Equals("bin", StringComparison.OrdinalIgnoreCase) &&
                        !first.Equals("obj", StringComparison.OrdinalIgnoreCase);
             })
-            .OrderBy(f => f)
-            .ToList();
+            .OrderBy(f => f);
 
-        if (csprojFiles.Count == 0)
-        {
-            sb.AppendLine("No .csproj files found.");
-            return sb.ToString();
-        }
-
-        sb.AppendLine($"Found **{csprojFiles.Count}** project(s):");
-        sb.AppendLine();
-        sb.AppendLine("| # | Project | Path | Type |");
-        sb.AppendLine("|---|---------|------|------|");
-
-        int index = 1;
         foreach (var file in csprojFiles)
         {
             string name = Path.GetFileNameWithoutExtension(file);
             string relativePath = Path.GetRelativePath(directory, file).Replace('\\', '/');
-            string type = DetectProjectType(file);
-            sb.AppendLine($"| {index} | {name} | {relativePath} | {type} |");
-            index++;
+            projects.Add((name, relativePath, DetectProjectType(file)));
         }
 
-        return sb.ToString();
+        return projects;
     }
 
-    private static string FormatSlnxProjects(string slnxPath)
-    {
-        var sb = new StringBuilder();
-        var slnDir = Path.GetDirectoryName(slnxPath)!;
-        sb.AppendLine($"# Solution: {Path.GetFileName(slnxPath)}");
-        sb.AppendLine();
-
-        var doc = XDocument.Load(slnxPath);
-        var projects = new List<(string Name, string RelativePath, string Type)>();
-
-        foreach (var elem in doc.Descendants("Project"))
-        {
-            var pathAttr = elem.Attribute("Path")?.Value;
-            if (string.IsNullOrEmpty(pathAttr)) continue;
-
-            if (!pathAttr.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) &&
-                !pathAttr.EndsWith(".vbproj", StringComparison.OrdinalIgnoreCase) &&
-                !pathAttr.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase))
-                continue;
-
-            string fullPath = Path.GetFullPath(Path.Combine(slnDir, pathAttr.Replace('/', Path.DirectorySeparatorChar)));
-            string name = Path.GetFileNameWithoutExtension(pathAttr);
-            string type = DetectProjectType(fullPath);
-            projects.Add((name, pathAttr.Replace('\\', '/'), type));
-        }
-
-        if (projects.Count == 0)
-        {
-            sb.AppendLine("No projects found in the solution.");
-            return sb.ToString();
-        }
-
-        sb.AppendLine($"Found **{projects.Count}** project(s):");
-        sb.AppendLine();
-        sb.AppendLine("| # | Project | Path | Type |");
-        sb.AppendLine("|---|---------|------|------|");
-
-        int index = 1;
-        foreach (var (name, relativePath, type) in projects)
-        {
-            sb.AppendLine($"| {index} | {name} | {relativePath} | {type} |");
-            index++;
-        }
-
-        return sb.ToString();
-    }
+    private static bool IsProjectFile(string path) =>
+        path.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".vbproj", StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".fsproj", StringComparison.OrdinalIgnoreCase);
 
     private static string DetectProjectType(string csprojPath)
     {

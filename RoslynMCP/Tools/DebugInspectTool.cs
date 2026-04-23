@@ -46,8 +46,7 @@ public static class DebugInspectTool
 
             // Batch mode: return table
             var sb = new StringBuilder();
-            sb.AppendLine("| Expression | Value |");
-            sb.AppendLine("|---|---|");
+            fmt.BeginTable(sb, "Evaluation", ["Expression", "Value"], parts.Length);
 
             foreach (var expr in parts)
             {
@@ -60,8 +59,9 @@ public static class DebugInspectTool
                 {
                     value = $"Error: {ex.Message}";
                 }
-                sb.AppendLine($"| {fmt.Escape(expr)} | {fmt.Escape(value)} |");
+                fmt.AddRow(sb, [expr, value]);
             }
+            fmt.EndTable(sb);
             fmt.AppendHints(sb,
                 "Use DebugContinue to resume execution",
                 "Use DebugSetBreakpoint to add more breakpoints");

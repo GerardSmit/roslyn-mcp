@@ -27,7 +27,14 @@ public sealed class MarkdownFormatter : IOutputFormatter
 
     public void AppendTable(StringBuilder sb, string name, string[] columns, List<string[]> rows, int? totalCount = null)
     {
-        // Header row
+        BeginTable(sb, name, columns, totalCount);
+        foreach (var row in rows)
+            AddRow(sb, row);
+        EndTable(sb);
+    }
+
+    public void BeginTable(StringBuilder sb, string name, string[] columns, int? totalCount = null)
+    {
         sb.Append('|');
         foreach (var col in columns)
         {
@@ -37,25 +44,39 @@ public sealed class MarkdownFormatter : IOutputFormatter
         }
         sb.AppendLine();
 
-        // Separator row
         sb.Append('|');
         foreach (var _ in columns)
             sb.Append("------|");
         sb.AppendLine();
-
-        // Data rows
-        foreach (var row in rows)
-        {
-            sb.Append('|');
-            for (int i = 0; i < row.Length; i++)
-            {
-                sb.Append(' ');
-                sb.Append(EscapeTableCell(row[i]));
-                sb.Append(" |");
-            }
-            sb.AppendLine();
-        }
     }
+
+    public void AddRow(StringBuilder sb, params ReadOnlySpan<string> values)
+    {
+        BeginRow(sb);
+        foreach (var val in values)
+            WriteCell(sb, val);
+        EndRow(sb);
+    }
+
+    public void BeginRow(StringBuilder sb) => sb.Append('|');
+
+    public void WriteCell(StringBuilder sb, string value)
+    {
+        sb.Append(' ');
+        sb.Append(EscapeTableCell(value));
+        sb.Append(" |");
+    }
+
+    public void WriteCell(StringBuilder sb, int value)
+    {
+        sb.Append(' ');
+        sb.Append(value);
+        sb.Append(" |");
+    }
+
+    public void EndRow(StringBuilder sb) => sb.AppendLine();
+
+    public void EndTable(StringBuilder sb) { }
 
     public void AppendHints(StringBuilder sb, params string[] hints)
     {

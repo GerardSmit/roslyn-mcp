@@ -69,6 +69,7 @@ public static class SemanticSymbolSearchTool
     public static async Task<string> SemanticSymbolSearch(
         [Description("Path to any file in the project/solution to search.")] string filePath,
         [Description("Search query: symbol name, pattern, or short description of intent.")] string query,
+        IOutputFormatter fmt,
         [Description("Maximum results to return (default 25, capped at 100).")] int maxResults = DefaultMaxResults,
         [Description("When true, also searches referenced-assembly types and members visible from the selected project.")]
         bool includeReferencedAssemblies = false,
@@ -104,6 +105,7 @@ public static class SemanticSymbolSearchTool
                 searchQuery.Raw,
                 projectCount,
                 includeReferencedAssemblies,
+                fmt,
                 totalBeforeCap: scored.Count);
         }
         catch (OperationCanceledException)
@@ -600,47 +602,39 @@ public static class SemanticSymbolSearchTool
         string query,
         int projectCount,
         bool searchedReferences,
+        IOutputFormatter fmt,
         int totalBeforeCap)
     {
         var sb = new StringBuilder();
-        sb.AppendLine($"# Semantic Symbol Search: \"{MarkdownFormatter.EscapeTableCell(query)}\"");
-        sb.AppendLine();
-        sb.Append($"Searched **{projectCount}** loaded C# source project(s)");
+        fmt.AppendHeader(sb, $"Semantic Symbol Search: \"{query}\"");
+        fmt.AppendField(sb, "Projects searched", projectCount);
         if (searchedReferences)
-            sb.Append(" plus referenced assemblies from the selected project");
-        sb.AppendLine(".");
+            fmt.AppendField(sb, "Referenced assemblies", "included");
 
         if (ranked.Count == 0)
         {
-            sb.AppendLine();
-            sb.AppendLine("No matching symbols found.");
+            fmt.AppendEmpty(sb, "No matching symbols found.");
             return sb.ToString();
         }
 
-        sb.AppendLine();
-        sb.Append($"Found **{totalBeforeCap}** result(s)");
-        if (ranked.Count < totalBeforeCap)
-            sb.Append($" (showing top {ranked.Count})");
-        sb.AppendLine(".");
-        sb.AppendLine();
-        sb.AppendLine("| # | Symbol | Kind | Project/Assembly | Location | Why |");
-        sb.AppendLine("|---|--------|------|------------------|----------|-----|");
-
+        fmt.BeginTable(sb, "Results", ["#", "Symbol", "Kind", "Project/Assembly", "Location", "Why"], totalBeforeCap);
         for (int index = 0; index < ranked.Count; index++)
         {
             var item = ranked[index];
-            sb.AppendLine(
-                $"| {index + 1} " +
-                $"| {MarkdownFormatter.EscapeTableCell(item.Symbol.ToDisplayString(s_symbolDisplayFormat))} " +
-                $"| {MarkdownFormatter.EscapeTableCell(GetKindDisplay(item.Symbol))} " +
-                $"| {MarkdownFormatter.EscapeTableCell(item.Origin)} " +
-                $"| {MarkdownFormatter.EscapeTableCell(FormatLocation(item))} " +
-                $"| {MarkdownFormatter.EscapeTableCell(item.MatchReason)} |");
+            fmt.BeginRow(sb);
+            fmt.WriteCell(sb, index + 1);
+            fmt.WriteCell(sb, item.Symbol.ToDisplayString(s_symbolDisplayFormat));
+            fmt.WriteCell(sb, GetKindDisplay(item.Symbol));
+            fmt.WriteCell(sb, item.Origin);
+            fmt.WriteCell(sb, FormatLocation(item));
+            fmt.WriteCell(sb, item.MatchReason);
+            fmt.EndRow(sb);
         }
+        fmt.EndTable(sb);
+        fmt.AppendTruncation(sb, ranked.Count, totalBeforeCap);
 
-        sb.AppendLine();
-        sb.AppendLine(
-            "_Tip: take a source result's file path and symbol text into `GoToDefinition` or `FindUsages` with a `[| |]` markup snippet for follow-up._");
+        fmt.AppendHints(sb,
+            "Take a source result's file path and symbol text into GoToDefinition or FindUsages with a [| |] markup snippet for follow-up.");
 
         return sb.ToString();
     }

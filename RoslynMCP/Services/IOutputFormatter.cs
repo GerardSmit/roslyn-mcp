@@ -12,6 +12,13 @@ public interface IOutputFormatter
     void AppendField(StringBuilder sb, string key, object? value);
     void AppendSeparator(StringBuilder sb);
     void AppendTable(StringBuilder sb, string name, string[] columns, List<string[]> rows, int? totalCount = null);
+    void BeginTable(StringBuilder sb, string name, string[] columns, int? totalCount = null);
+    void AddRow(StringBuilder sb, params ReadOnlySpan<string> values);
+    void BeginRow(StringBuilder sb);
+    void WriteCell(StringBuilder sb, string value);
+    void WriteCell(StringBuilder sb, int value);
+    void EndRow(StringBuilder sb);
+    void EndTable(StringBuilder sb);
     void AppendHints(StringBuilder sb, params string[] hints);
     void AppendEmpty(StringBuilder sb, string message);
     void AppendTruncation(StringBuilder sb, int shown, int total, string paramName = "maxResults");

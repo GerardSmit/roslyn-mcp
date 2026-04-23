@@ -25,6 +25,7 @@ public static class FindImplementationsTool
             "Code snippet with [| |] markers around the target, " +
             "e.g. 'public interface [|IService|]' or 'virtual void [|Execute|]()'.")]
         string markupSnippet,
+        IOutputFormatter fmt,
         [Description("Approximate line number near the target snippet. Used to pick the closest match when the snippet appears multiple times.")]
         int? hintLine = null,
         CancellationToken cancellationToken = default)
@@ -45,13 +46,13 @@ public static class FindImplementationsTool
             return symbol switch
             {
                 INamedTypeSymbol typeSymbol => await FindTypeImplementationsAsync(
-                    typeSymbol, solution, ctx.Project, cancellationToken),
+                    typeSymbol, solution, ctx.Project, fmt, cancellationToken),
                 IMethodSymbol methodSymbol => await FindMemberImplementationsAsync(
-                    methodSymbol, solution, ctx.Project, cancellationToken),
+                    methodSymbol, solution, ctx.Project, fmt, cancellationToken),
                 IPropertySymbol propertySymbol => await FindMemberImplementationsAsync(
-                    propertySymbol, solution, ctx.Project, cancellationToken),
+                    propertySymbol, solution, ctx.Project, fmt, cancellationToken),
                 IEventSymbol eventSymbol => await FindMemberImplementationsAsync(
-                    eventSymbol, solution, ctx.Project, cancellationToken),
+                    eventSymbol, solution, ctx.Project, fmt, cancellationToken),
                 _ => $"Cannot find implementations for {symbol.Kind} '{symbol.Name}'. " +
                      "This tool works with interfaces, classes, and virtual/abstract members.",
             };
@@ -71,6 +72,7 @@ public static class FindImplementationsTool
         INamedTypeSymbol typeSymbol,
         Solution solution,
         Project project,
+        IOutputFormatter fmt,
         CancellationToken cancellationToken)
     {
         var sb = new StringBuilder();
@@ -117,13 +119,11 @@ public static class FindImplementationsTool
             return sb.ToString();
         }
 
-        sb.AppendLine($"## {(isInterface ? "Implementing Types" : "Derived Types")} ({implementations.Count})");
-        sb.AppendLine();
-        sb.AppendLine("| Type | File | Lines |");
-        sb.AppendLine("|------|------|-------|");
+        fmt.AppendHeader(sb, $"{(isInterface ? "Implementing Types" : "Derived Types")} ({implementations.Count})", 2);
 
         string? projectDir = Path.GetDirectoryName(project.FilePath);
 
+        fmt.BeginTable(sb, "Implementations", ["Type", "File", "Lines"], implementations.Count);
         foreach (var (type, loc) in implementations.OrderBy(i => i.Type.Name))
         {
             string typeName = type.ToDisplayString();
@@ -137,13 +137,14 @@ public static class FindImplementationsTool
                 int line = lineSpan.StartLinePosition.Line + 1;
                 int endLine = ToolHelper.GetDeclarationEndLine(loc);
                 string lineRange = endLine > line ? $"{line}–{endLine}" : $"{line}";
-                sb.AppendLine($"| {MarkdownFormatter.EscapeTableCell(typeName)} | {MarkdownFormatter.EscapeTableCell(displayPath)} | {lineRange} |");
+                fmt.AddRow(sb, [typeName, displayPath, lineRange]);
             }
             else
             {
-                sb.AppendLine($"| {MarkdownFormatter.EscapeTableCell(typeName)} | (external) | - |");
+                fmt.AddRow(sb, [typeName, "(external)", "-"]);
             }
         }
+        fmt.EndTable(sb);
 
         // Show code context for first few implementations
         sb.AppendLine();
@@ -183,6 +184,7 @@ public static class FindImplementationsTool
         ISymbol memberSymbol,
         Solution solution,
         Project project,
+        IOutputFormatter fmt,
         CancellationToken cancellationToken)
     {
         var sb = new StringBuilder();
@@ -229,13 +231,11 @@ public static class FindImplementationsTool
             return sb.ToString();
         }
 
-        sb.AppendLine($"## Implementations ({implementations.Count})");
-        sb.AppendLine();
-        sb.AppendLine("| Implementation | Containing Type | File | Line |");
-        sb.AppendLine("|----------------|-----------------|------|------|");
+        fmt.AppendHeader(sb, $"Implementations ({implementations.Count})", 2);
 
         string? projectDir = Path.GetDirectoryName(project.FilePath);
 
+        fmt.BeginTable(sb, "Implementations", ["Implementation", "Containing Type", "File", "Line"], implementations.Count);
         foreach (var (impl, loc) in implementations.OrderBy(i => i.Symbol.ContainingType?.Name))
         {
             string implDisplay = impl.ToDisplayString();
@@ -248,13 +248,19 @@ public static class FindImplementationsTool
                     ? Path.GetRelativePath(projectDir, filePath)
                     : filePath;
                 int line = lineSpan.StartLinePosition.Line + 1;
-                sb.AppendLine($"| {MarkdownFormatter.EscapeTableCell(implDisplay)} | {MarkdownFormatter.EscapeTableCell(containingType)} | {MarkdownFormatter.EscapeTableCell(displayPath)} | {line} |");
+                fmt.BeginRow(sb);
+                fmt.WriteCell(sb, implDisplay);
+                fmt.WriteCell(sb, containingType);
+                fmt.WriteCell(sb, displayPath);
+                fmt.WriteCell(sb, line);
+                fmt.EndRow(sb);
             }
             else
             {
-                sb.AppendLine($"| {MarkdownFormatter.EscapeTableCell(implDisplay)} | {MarkdownFormatter.EscapeTableCell(containingType)} | (external) | - |");
+                fmt.AddRow(sb, implDisplay, containingType, "(external)", "-");
             }
         }
+        fmt.EndTable(sb);
 
         return sb.ToString();
     }

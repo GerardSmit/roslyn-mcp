@@ -13,7 +13,7 @@ internal class AspxDiagnostics : IDiagnosticsHandler
     public bool CanHandle(string filePath) => AspxSourceMappingService.IsAspxFile(filePath);
 
     public async Task<string> ValidateAsync(
-        string filePath, CancellationToken cancellationToken)
+        string filePath, IOutputFormatter fmt, CancellationToken cancellationToken)
     {
         if (!File.Exists(filePath))
             return $"Error: File {filePath} does not exist.";

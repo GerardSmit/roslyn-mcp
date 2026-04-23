@@ -1,3 +1,5 @@
+using RoslynMCP.Services;
+
 namespace RoslynMCP.Tools;
 
 /// <summary>
@@ -6,5 +8,5 @@ namespace RoslynMCP.Tools;
 public interface IDiagnosticsHandler
 {
     bool CanHandle(string filePath);
-    Task<string> ValidateAsync(string systemPath, CancellationToken cancellationToken);
+    Task<string> ValidateAsync(string systemPath, IOutputFormatter fmt, CancellationToken cancellationToken);
 }

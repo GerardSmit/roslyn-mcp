@@ -125,7 +125,7 @@ public static class ProjectStructureTool
                 const int compactThreshold = 200;
                 if (types.Count > compactThreshold)
                 {
-                    AppendNamespaceSummary(sb, types);
+                    AppendNamespaceSummary(sb, types, fmt);
                 }
                 else
                 {
@@ -275,7 +275,7 @@ public static class ProjectStructureTool
     /// <summary>
     /// Builds a compact namespace summary showing type counts per namespace.
     /// </summary>
-    private static void AppendNamespaceSummary(StringBuilder sb, List<INamedTypeSymbol> types)
+    private static void AppendNamespaceSummary(StringBuilder sb, List<INamedTypeSymbol> types, IOutputFormatter fmt)
     {
         var byNamespace = types
             .GroupBy(t =>
@@ -286,9 +286,7 @@ public static class ProjectStructureTool
             })
             .OrderBy(g => g.Key);
 
-        sb.AppendLine("| Namespace | Classes | Interfaces | Enums | Structs | Other |");
-        sb.AppendLine("|-----------|---------|------------|-------|---------|-------|");
-
+        fmt.BeginTable(sb, "Namespaces", ["Namespace", "Classes", "Interfaces", "Enums", "Structs", "Other"]);
         foreach (var nsGroup in byNamespace)
         {
             int classes = nsGroup.Count(t => t.TypeKind == TypeKind.Class);
@@ -296,13 +294,16 @@ public static class ProjectStructureTool
             int enums = nsGroup.Count(t => t.TypeKind == TypeKind.Enum);
             int structs = nsGroup.Count(t => t.TypeKind == TypeKind.Struct);
             int other = nsGroup.Count() - classes - interfaces - enums - structs;
-
-            sb.Append($"| {nsGroup.Key} | {classes}");
-            sb.Append($" | {interfaces}");
-            sb.Append($" | {enums}");
-            sb.Append($" | {structs}");
-            sb.AppendLine($" | {other} |");
+            fmt.BeginRow(sb);
+            fmt.WriteCell(sb, nsGroup.Key);
+            fmt.WriteCell(sb, classes);
+            fmt.WriteCell(sb, interfaces);
+            fmt.WriteCell(sb, enums);
+            fmt.WriteCell(sb, structs);
+            fmt.WriteCell(sb, other);
+            fmt.EndRow(sb);
         }
+        fmt.EndTable(sb);
     }
 
     /// <summary>
