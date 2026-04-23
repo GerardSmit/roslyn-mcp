@@ -174,6 +174,10 @@ Use the following server configuration:
 |------|-------------|
 | `--no-webforms` | Disable WebForms (ASPX/ASCX) support. |
 | `--no-razor` | Disable Razor (.razor/.cshtml) support. |
+| `--no-debugger` | Disable all debugger tools (see [Debugging](#debugging)). |
+| `--no-profiling` | Disable all profiling tools (see [Profiling](#profiling)). |
+| `--db <alias>=<provider>:<connstr>` | Register a database connection. Repeatable. Providers: `psql`, `mssql`, `sqlite`. See [Databases](#databases). |
+| `--no-db` | Disable all database tools. |
 
 Example with Razor disabled:
 
@@ -245,7 +249,7 @@ Example with Razor disabled:
 
 ### Debugging
 
-Debugging uses [netcoredbg](https://github.com/Samsung/netcoredbg), which is auto-provisioned on first use.
+Debugging uses [netcoredbg](https://github.com/Samsung/netcoredbg), which is auto-provisioned on first use. Disable with `--no-debugger`.
 
 | Tool | Description |
 |------|-------------|
@@ -261,7 +265,7 @@ Debugging uses [netcoredbg](https://github.com/Samsung/netcoredbg), which is aut
 
 ### Profiling
 
-Profiling uses [dotnet-trace](https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-trace) with CPU sampling, auto-provisioned on first use.
+Profiling uses [dotnet-trace](https://learn.microsoft.com/en-us/dotnet/core/diagnostics/dotnet-trace) with CPU sampling, auto-provisioned on first use. Disable with `--no-profiling`.
 
 | Tool | Description |
 |------|-------------|
@@ -279,6 +283,78 @@ Profiling uses [dotnet-trace](https://learn.microsoft.com/en-us/dotnet/core/diag
 |------|-------------|
 | **GetBackgroundTaskResult** | Check status and results of a background task by task ID. |
 | **ListBackgroundTasks** | List all background tasks with their statuses. |
+
+### Databases
+
+Query configured databases directly from the LLM without needing `psql`, `sqlcmd`, or `sqlite3` installed. Connections are registered at server startup via `--db` (see [Command-Line Options](#command-line-options)). Connections are writable by default.
+
+| Tool | Description |
+|------|-------------|
+| **DbQuery** | Run a SELECT query on a configured connection. Returns results as a table. Supports parameterized queries via a JSON object. |
+| **DbExecute** | Run a non-query SQL statement (INSERT/UPDATE/DELETE/DDL). Returns affected rows. |
+| **DbListConnections** | List all configured database connections. |
+| **DbListTables** | List tables and views, optionally filtered by schema. |
+| **DbDescribeTable** | Show columns, types, nullability, and defaults for a table. |
+
+Example configuration with all three providers:
+
+```json
+{
+    "servers": {
+        "RoslynSense": {
+            "type": "stdio",
+            "command": "roslyn-sense",
+            "args": [
+                "--db", "prod=psql:Host=db.example.com;Database=app;Username=app;Password=s3cr3t",
+                "--db", "local=sqlite:C:\\dev\\app.db",
+                "--db", "reports=mssql:Server=(local);Database=Reporting;Integrated Security=true"
+            ]
+        }
+    }
+}
+```
+
+Provider tokens: `psql` / `postgres` / `postgresql`, `mssql` / `sqlserver` / `sql`, `sqlite`. Alias prefix is optional (defaults to the canonical provider name).
+
+#### Referencing connection strings from config files
+
+The connection-string portion can be a raw ADO.NET string *or* a reference to an existing config file so the LLM does not need the secret baked into the MCP config:
+
+| Form | Meaning |
+|------|---------|
+| `xml:<path>#<name>` | `.NET Framework` shorthand — `/configuration/connectionStrings/add[@name='<name>']/@connectionString` |
+| `xml:<path>#<xpath>` | Full XPath starting with `/` or `//`. Returns attribute value or element text. |
+| `json:<path>#<name>` | `.NET Core` shorthand — `$.ConnectionStrings.<name>` |
+| `json:<path>#$.a.b.c` | Dotted JSON path. |
+
+Examples:
+
+```json
+"args": [
+    "--db", "legacy=mssql:xml:./src/WebApp/web.config#SiteSqlServer",
+    "--db", "core=mssql:json:./src/CoreApp/appsettings.json#Default",
+    "--db", "custom=psql:json:./secrets.json#$.Databases.Primary.ConnStr"
+]
+```
+
+The delimiter between path and query is always `#`. Paths support the following placeholders so config-file references stay portable across machines / CI / committed `.mcp.json`:
+
+| Placeholder | Resolves to |
+|-------------|-------------|
+| `${gitRoot}` | Nearest ancestor directory containing `.git`. |
+| `${solutionRoot}` | Nearest ancestor directory containing `*.sln` or `*.slnx`. |
+| `${env:NAME}` | Environment variable `NAME`. |
+
+Example committed to Git:
+
+```json
+"args": [
+    "--db", "legacy=mssql:xml:${gitRoot}/src/WebApp/web.config#SiteSqlServer",
+    "--db", "core=mssql:json:${solutionRoot}/src/CoreApp/appsettings.json#Default"
+]
+```
+
+Plain relative paths (no placeholder) resolve in this order: CWD → solutionRoot → gitRoot. First existing file wins. This lets a committed `.mcp.json` work on any contributor's machine regardless of where Claude was launched, without requiring a placeholder.
 
 ## Resources
 

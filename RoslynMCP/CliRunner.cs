@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using ModelContextProtocol.Server;
 using RoslynMCP.Services;
+using RoslynMCP.Services.Database;
 using RoslynMCP.Tools; // IFindUsagesHandler, IGoToDefinitionHandler, etc.
 using RoslynMCP.Tools.Razor;
 using RoslynMCP.Tools.WebForms;
@@ -36,6 +37,7 @@ internal static class CliRunner
         typeof(IEnumerable<IOutlineHandler>),
         typeof(IEnumerable<IRenameHandler>),
         typeof(IEnumerable<IDiagnosticsHandler>),
+        typeof(DbConnectionRegistry),
     ];
 
     // -------------------------------------------------------------------------
@@ -74,12 +76,14 @@ internal static class CliRunner
         bool useToon = parsed.ContainsKey("toon");
         var fmt = useToon ? (IOutputFormatter)new ToonFormatter() : new MarkdownFormatter();
 
+        var dbRegistry = new DbConnectionRegistry(DbCliParser.Parse(args));
+
         using var cts = new CancellationTokenSource();
         Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
 
         try
         {
-            var result = await InvokeAsync(method, parsed, fmt, cts.Token);
+            var result = await InvokeAsync(method, parsed, fmt, dbRegistry, cts.Token);
             Console.WriteLine(result);
             return 0;
         }
@@ -139,7 +143,7 @@ internal static class CliRunner
 
     private static async Task<string> InvokeAsync(
         MethodInfo method, Dictionary<string, string> parsed,
-        IOutputFormatter fmt, CancellationToken ct)
+        IOutputFormatter fmt, DbConnectionRegistry dbRegistry, CancellationToken ct)
     {
         // Build lazily — only create handler instances we actually need
         IFindUsagesHandler[]? findUsagesHandlers = null;
@@ -194,6 +198,11 @@ internal static class CliRunner
             if (pt == typeof(IEnumerable<IDiagnosticsHandler>))
             {
                 values[i] = diagnosticsHandlers ??= [new AspxDiagnostics(), new RazorDiagnostics()];
+                continue;
+            }
+            if (pt == typeof(DbConnectionRegistry))
+            {
+                values[i] = dbRegistry;
                 continue;
             }
 

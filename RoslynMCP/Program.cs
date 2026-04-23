@@ -1,9 +1,11 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
 using RoslynMCP.Services;
+using RoslynMCP.Services.Database;
 using RoslynMCP.Tools;
 using RoslynMCP.Tools.Razor;
 using RoslynMCP.Tools.WebForms;
@@ -20,6 +22,10 @@ class Program
 
         bool noWebForms = args.Contains("--no-webforms", StringComparer.OrdinalIgnoreCase);
         bool noRazor = args.Contains("--no-razor", StringComparer.OrdinalIgnoreCase);
+        bool noDebugger = args.Contains("--no-debugger", StringComparer.OrdinalIgnoreCase);
+        bool noProfiling = args.Contains("--no-profiling", StringComparer.OrdinalIgnoreCase);
+        bool noDb = args.Contains("--no-db", StringComparer.OrdinalIgnoreCase);
+        var dbProviders = noDb ? (IReadOnlyList<IDbProvider>)Array.Empty<IDbProvider>() : DbCliParser.Parse(args);
 
         var builder = Host.CreateApplicationBuilder(args);
         builder.Logging.AddConsole(consoleLogOptions =>
@@ -35,6 +41,7 @@ class Program
         builder.Services.AddSingleton<ProfilingSessionStore>();
         builder.Services.AddSingleton<BackgroundTaskStore>();
         builder.Services.AddSingleton<BuildWarningsStore>();
+        builder.Services.AddSingleton(new DbConnectionRegistry(dbProviders));
 
         // Register non-C# file type handlers conditionally
         if (!noWebForms)
@@ -54,10 +61,18 @@ class Program
             builder.Services.AddSingleton<IDiagnosticsHandler, RazorDiagnostics>();
         }
 
+        var toolTypes = typeof(Program).Assembly
+            .GetTypes()
+            .Where(t => t.GetCustomAttribute<McpServerToolTypeAttribute>() is not null)
+            .Where(t => !(noDebugger && t.Name.StartsWith("Debug", StringComparison.Ordinal)))
+            .Where(t => !(noProfiling && t.Name.StartsWith("Profile", StringComparison.Ordinal)))
+            .Where(t => !(noDb && t.Name.StartsWith("Database", StringComparison.Ordinal)))
+            .ToArray();
+
         builder.Services
             .AddMcpServer()
             .WithStdioServerTransport()
-            .WithToolsFromAssembly()
+            .WithTools(toolTypes)
             .WithResourcesFromAssembly()
             .WithPromptsFromAssembly();
         await builder.Build().RunAsync();

@@ -1,0 +1,634 @@
+using RoslynMCP.Services;
+using RoslynMCP.Services.Database;
+using RoslynMCP.Tools;
+using Xunit;
+
+namespace RoslynMCP.Tests;
+
+public sealed class DatabaseToolTests
+{
+    private static readonly IOutputFormatter s_fmt = new MarkdownFormatter();
+
+    // ---------------------------------------------------------------------
+    // CLI parser
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void Parse_NoArgs_Empty()
+    {
+        var result = DbCliParser.Parse([]);
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void Parse_Psql_WithAlias()
+    {
+        var providers = DbCliParser.Parse(["--db", "prod=psql:Host=db;Database=app"]);
+        var p = Assert.Single(providers);
+        Assert.Equal("prod", p.Alias);
+        Assert.Equal("psql", p.ProviderName);
+        Assert.IsType<PostgresDbProvider>(p);
+    }
+
+    [Fact]
+    public void Parse_Mssql_WithAlias()
+    {
+        var providers = DbCliParser.Parse(["--db", "reports=mssql:Server=(local);Database=R"]);
+        var p = Assert.Single(providers);
+        Assert.Equal("reports", p.Alias);
+        Assert.Equal("mssql", p.ProviderName);
+        Assert.IsType<MssqlDbProvider>(p);
+    }
+
+    [Fact]
+    public void Parse_Sqlite_WithAlias()
+    {
+        var providers = DbCliParser.Parse(["--db", "local=sqlite::memory:"]);
+        var p = Assert.Single(providers);
+        Assert.Equal("local", p.Alias);
+        Assert.Equal("sqlite", p.ProviderName);
+        Assert.IsType<SqliteDbProvider>(p);
+    }
+
+    [Fact]
+    public void Parse_AliasOmitted_UsesProviderName()
+    {
+        var providers = DbCliParser.Parse(["--db", "psql:Host=h"]);
+        var p = Assert.Single(providers);
+        Assert.Equal("psql", p.Alias);
+    }
+
+    [Fact]
+    public void Parse_SqliteWithWindowsPath_PreservesColon()
+    {
+        var providers = DbCliParser.Parse(["--db", @"local=sqlite:C:\foo.db"]);
+        var p = Assert.Single(providers);
+        Assert.Equal("local", p.Alias);
+        Assert.IsType<SqliteDbProvider>(p);
+    }
+
+    [Fact]
+    public void Parse_MultipleDbArgs_AllRegistered()
+    {
+        var providers = DbCliParser.Parse([
+            "--db", "a=sqlite::memory:",
+            "--other-flag", "x",
+            "--db", "b=sqlite::memory:",
+        ]);
+        Assert.Equal(2, providers.Count);
+        Assert.Equal("a", providers[0].Alias);
+        Assert.Equal("b", providers[1].Alias);
+    }
+
+    [Fact]
+    public void Parse_ProviderAliases_Postgres()
+    {
+        Assert.IsType<PostgresDbProvider>(DbCliParser.Parse(["--db", "postgres:Host=h"]).Single());
+        Assert.IsType<PostgresDbProvider>(DbCliParser.Parse(["--db", "postgresql:Host=h"]).Single());
+        Assert.IsType<MssqlDbProvider>(DbCliParser.Parse(["--db", "sqlserver:Server=s"]).Single());
+        Assert.IsType<MssqlDbProvider>(DbCliParser.Parse(["--db", "sql:Server=s"]).Single());
+    }
+
+    [Fact]
+    public void Parse_UnknownProvider_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => DbCliParser.Parse(["--db", "nope:foo"]));
+    }
+
+    [Fact]
+    public void Parse_MissingValue_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => DbCliParser.Parse(["--db"]));
+    }
+
+    // ---------------------------------------------------------------------
+    // ConnectionStringResolver
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void Resolve_RawString_Passthrough()
+    {
+        Assert.Equal("Host=x;Database=y", ConnectionStringResolver.Resolve("Host=x;Database=y"));
+    }
+
+    [Fact]
+    public void Resolve_XmlShorthand_ReturnsConnectionString()
+    {
+        var path = WriteTempFile(".config", """
+            <?xml version="1.0"?>
+            <configuration>
+              <connectionStrings>
+                <add name="SiteSqlServer" connectionString="Server=foo;Database=bar" providerName="System.Data.SqlClient" />
+              </connectionStrings>
+            </configuration>
+            """);
+        try
+        {
+            var resolved = ConnectionStringResolver.Resolve($"xml:{path}#SiteSqlServer");
+            Assert.Equal("Server=foo;Database=bar", resolved);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Resolve_XmlFullXPath_ReturnsValue()
+    {
+        var path = WriteTempFile(".config", """
+            <?xml version="1.0"?>
+            <configuration>
+              <connectionStrings>
+                <add name="SiteSqlServer" connectionString="Server=foo;Database=bar" />
+              </connectionStrings>
+            </configuration>
+            """);
+        try
+        {
+            var resolved = ConnectionStringResolver.Resolve(
+                $"xml:{path}#//connectionStrings/add[@name='SiteSqlServer']/@connectionString");
+            Assert.Equal("Server=foo;Database=bar", resolved);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Resolve_XmlMissingNode_Throws()
+    {
+        var path = WriteTempFile(".config", """
+            <?xml version="1.0"?>
+            <configuration><connectionStrings/></configuration>
+            """);
+        try
+        {
+            Assert.Throws<InvalidOperationException>(() =>
+                ConnectionStringResolver.Resolve($"xml:{path}#Missing"));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Resolve_JsonShorthand_ReturnsConnectionString()
+    {
+        var path = WriteTempFile(".json", """
+            {
+              "ConnectionStrings": {
+                "MyProject": "Host=db;Database=app"
+              }
+            }
+            """);
+        try
+        {
+            var resolved = ConnectionStringResolver.Resolve($"json:{path}#MyProject");
+            Assert.Equal("Host=db;Database=app", resolved);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Resolve_JsonFullPath_ReturnsValue()
+    {
+        var path = WriteTempFile(".json", """
+            {
+              "Databases": {
+                "Primary": { "ConnStr": "Host=x" }
+              }
+            }
+            """);
+        try
+        {
+            var resolved = ConnectionStringResolver.Resolve($"json:{path}#$.Databases.Primary.ConnStr");
+            Assert.Equal("Host=x", resolved);
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Resolve_JsonMissingKey_Throws()
+    {
+        var path = WriteTempFile(".json", """{"ConnectionStrings":{}}""");
+        try
+        {
+            Assert.Throws<InvalidOperationException>(() =>
+                ConnectionStringResolver.Resolve($"json:{path}#Missing"));
+        }
+        finally { File.Delete(path); }
+    }
+
+    [Fact]
+    public void Resolve_MissingHash_Throws()
+    {
+        Assert.Throws<ArgumentException>(() => ConnectionStringResolver.Resolve("xml:foo.config"));
+    }
+
+    [Fact]
+    public void Parse_DbFlag_WithXmlReference_ResolvesConnectionString()
+    {
+        var path = WriteTempFile(".config", """
+            <?xml version="1.0"?>
+            <configuration>
+              <connectionStrings>
+                <add name="X" connectionString="Server=(local);Database=Test" />
+              </connectionStrings>
+            </configuration>
+            """);
+        try
+        {
+            var providers = DbCliParser.Parse(["--db", $"prod=mssql:xml:{path}#X"]);
+            var p = Assert.Single(providers);
+            Assert.Equal("prod", p.Alias);
+            Assert.IsType<MssqlDbProvider>(p);
+        }
+        finally { File.Delete(path); }
+    }
+
+    private static string WriteTempFile(string ext, string content)
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"rmcp-{Guid.NewGuid():N}{ext}");
+        File.WriteAllText(path, content);
+        return path;
+    }
+
+    // ---------------------------------------------------------------------
+    // PathVariableExpander
+    // ---------------------------------------------------------------------
+
+    [Fact]
+    public void Expand_NoPlaceholders_Unchanged()
+    {
+        Assert.Equal("foo/bar.xml", PathVariableExpander.Expand("foo/bar.xml"));
+    }
+
+    [Fact]
+    public void Expand_EnvVar_Substituted()
+    {
+        Environment.SetEnvironmentVariable("RMCP_TEST_VAR", "hello");
+        try
+        {
+            Assert.Equal("hello/x.xml", PathVariableExpander.Expand("${env:RMCP_TEST_VAR}/x.xml"));
+        }
+        finally { Environment.SetEnvironmentVariable("RMCP_TEST_VAR", null); }
+    }
+
+    [Fact]
+    public void Expand_MissingEnvVar_Throws()
+    {
+        Assert.Throws<InvalidOperationException>(() =>
+            PathVariableExpander.Expand("${env:RMCP_DEFINITELY_UNSET_XYZ}"));
+    }
+
+    [Fact]
+    public void Expand_UnknownPlaceholder_Throws()
+    {
+        Assert.Throws<InvalidOperationException>(() =>
+            PathVariableExpander.Expand("${bogus}"));
+    }
+
+    [Fact]
+    public void Expand_GitRoot_FromSubdirectory()
+    {
+        var root = CreateTempRepoWithGit(out var subDir);
+        try
+        {
+            var expanded = PathVariableExpander.Expand("${gitRoot}/app.config", subDir);
+            Assert.Equal(Path.GetFullPath(Path.Combine(root, "app.config")), Path.GetFullPath(expanded));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void Expand_SolutionRoot_FindsSln()
+    {
+        var root = CreateTempDir();
+        File.WriteAllText(Path.Combine(root, "My.sln"), "");
+        var sub = Directory.CreateDirectory(Path.Combine(root, "src", "App")).FullName;
+        try
+        {
+            var expanded = PathVariableExpander.Expand("${solutionRoot}/cfg.json", sub);
+            Assert.Equal(Path.GetFullPath(Path.Combine(root, "cfg.json")), Path.GetFullPath(expanded));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void Expand_SolutionRoot_FindsSlnx()
+    {
+        var root = CreateTempDir();
+        File.WriteAllText(Path.Combine(root, "My.slnx"), "<Solution/>");
+        var sub = Directory.CreateDirectory(Path.Combine(root, "src")).FullName;
+        try
+        {
+            var expanded = PathVariableExpander.Expand("${solutionRoot}/cfg.json", sub);
+            Assert.Equal(Path.GetFullPath(Path.Combine(root, "cfg.json")), Path.GetFullPath(expanded));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void ResolveFilePath_PlainRelative_FallsBackToSolutionRoot()
+    {
+        var root = CreateTempDir();
+        File.WriteAllText(Path.Combine(root, "My.sln"), "");
+        var cfgDir = Directory.CreateDirectory(Path.Combine(root, "src", "App")).FullName;
+        var cfgPath = Path.Combine(cfgDir, "web.config");
+        File.WriteAllText(cfgPath, "<x/>");
+        var cwd = Directory.CreateDirectory(Path.Combine(root, "other", "place")).FullName;
+        try
+        {
+            var resolved = PathVariableExpander.ResolveFilePath("src/App/web.config", cwd);
+            Assert.Equal(Path.GetFullPath(cfgPath), Path.GetFullPath(resolved));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void ResolveFilePath_PlainRelative_FallsBackToGitRoot()
+    {
+        var root = CreateTempRepoWithGit(out var subDir);
+        var cfgPath = Path.Combine(root, "src", "WebApp", "web.config");
+        File.WriteAllText(cfgPath, "<x/>");
+        var cwd = Directory.CreateDirectory(Path.Combine(root, "tools")).FullName;
+        try
+        {
+            var resolved = PathVariableExpander.ResolveFilePath("src/WebApp/web.config", cwd);
+            Assert.Equal(Path.GetFullPath(cfgPath), Path.GetFullPath(resolved));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void ResolveFilePath_ExistsAtCwd_PrefersCwd()
+    {
+        var root = CreateTempRepoWithGit(out _);
+        var cwdFile = Path.Combine(root, "cfg.json");
+        File.WriteAllText(cwdFile, "{}");
+        File.WriteAllText(Path.Combine(root, "x.json"), "{}"); // at git root too
+        try
+        {
+            var resolved = PathVariableExpander.ResolveFilePath("cfg.json", root);
+            Assert.Equal(Path.GetFullPath(cwdFile), Path.GetFullPath(resolved));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void ResolveFilePath_PlaceholderDisablesFallback()
+    {
+        var root = CreateTempRepoWithGit(out _);
+        // File lives at git root only, but placeholder uses solutionRoot which doesn't exist → throws
+        var cwd = Directory.CreateDirectory(Path.Combine(root, "sub")).FullName;
+        try
+        {
+            Assert.Throws<InvalidOperationException>(() =>
+                PathVariableExpander.ResolveFilePath("${solutionRoot}/web.config", cwd));
+        }
+        finally { Directory.Delete(root, recursive: true); }
+    }
+
+    [Fact]
+    public void Expand_GitRoot_NoRepo_Throws()
+    {
+        var dir = CreateTempDir();
+        try
+        {
+            Assert.Throws<InvalidOperationException>(() =>
+                PathVariableExpander.Expand("${gitRoot}/x", dir));
+        }
+        finally { Directory.Delete(dir, recursive: true); }
+    }
+
+    private static string CreateTempDir()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), $"rmcp-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    private static string CreateTempRepoWithGit(out string subDir)
+    {
+        var root = CreateTempDir();
+        Directory.CreateDirectory(Path.Combine(root, ".git"));
+        subDir = Directory.CreateDirectory(Path.Combine(root, "src", "WebApp")).FullName;
+        return root;
+    }
+
+    // ---------------------------------------------------------------------
+    // SQLite in-memory end-to-end
+    // ---------------------------------------------------------------------
+
+    private static DbConnectionRegistry NewSqliteRegistry(string alias = "mem")
+    {
+        var cs = $"Data Source=file:{Guid.NewGuid():N}?mode=memory&cache=shared";
+        return new DbConnectionRegistry([new SqliteDbProvider(alias, cs)]);
+    }
+
+    private static async Task SeedAsync(DbConnectionRegistry reg, string alias = "mem")
+    {
+        var p = reg.Get(alias)!;
+        await p.ExecuteNonQueryAsync("CREATE TABLE t(id INTEGER PRIMARY KEY, name TEXT, val INTEGER)", null, default);
+        await p.ExecuteNonQueryAsync("INSERT INTO t(name, val) VALUES ('a', 1), ('b', 2), ('c', NULL)", null, default);
+    }
+
+    [Fact]
+    public async Task DbQuery_ReturnsRows()
+    {
+        var reg = NewSqliteRegistry();
+        await SeedAsync(reg);
+
+        var output = await DatabaseTool.DbQuery("mem", "SELECT name, val FROM t ORDER BY id", reg, s_fmt);
+
+        Assert.Contains("a", output);
+        Assert.Contains("b", output);
+        Assert.Contains("c", output);
+    }
+
+    [Fact]
+    public async Task DbQuery_NullValue_RenderedAsNullLiteral()
+    {
+        var reg = NewSqliteRegistry();
+        await SeedAsync(reg);
+
+        var output = await DatabaseTool.DbQuery("mem", "SELECT val FROM t WHERE name='c'", reg, s_fmt);
+        Assert.Contains("(null)", output);
+    }
+
+    [Fact]
+    public async Task DbQuery_MaxRowsExceeded_ReportsTruncation()
+    {
+        var reg = NewSqliteRegistry();
+        await SeedAsync(reg);
+
+        var output = await DatabaseTool.DbQuery("mem", "SELECT * FROM t", reg, s_fmt, maxRows: 2);
+        Assert.Contains("maxRows", output);
+    }
+
+    [Fact]
+    public async Task DbQuery_WithParameters_Bound()
+    {
+        var reg = NewSqliteRegistry();
+        await SeedAsync(reg);
+
+        var output = await DatabaseTool.DbQuery(
+            "mem", "SELECT name FROM t WHERE val = @v", reg, s_fmt, parameters: "{\"@v\": 2}");
+
+        Assert.Contains("b", output);
+        Assert.DoesNotContain("| a |", output);
+    }
+
+    [Fact]
+    public async Task DbExecute_ReturnsAffectedRows()
+    {
+        var reg = NewSqliteRegistry();
+        await SeedAsync(reg);
+
+        var output = await DatabaseTool.DbExecute(
+            "mem", "UPDATE t SET name = 'zz' WHERE val = 1", reg, s_fmt);
+
+        Assert.Contains("Rows affected", output);
+        Assert.Contains("1", output);
+    }
+
+    [Fact]
+    public async Task DbQuery_InvalidAlias_ReturnsError()
+    {
+        var reg = NewSqliteRegistry();
+        var output = await DatabaseTool.DbQuery("bogus", "SELECT 1", reg, s_fmt);
+        Assert.StartsWith("Error:", output);
+    }
+
+    [Fact]
+    public async Task DbQuery_SyntaxError_ReturnsCleanError()
+    {
+        var reg = NewSqliteRegistry();
+        await SeedAsync(reg);
+
+        var output = await DatabaseTool.DbQuery("mem", "SELECT !bogus", reg, s_fmt);
+        Assert.StartsWith("SQL Error:", output);
+    }
+
+    [Fact]
+    public async Task DbListTables_ReturnsTableNames()
+    {
+        var reg = NewSqliteRegistry();
+        await SeedAsync(reg);
+
+        var output = await DatabaseTool.DbListTables("mem", reg, s_fmt);
+        Assert.Contains("t", output);
+    }
+
+    [Fact]
+    public async Task DbDescribeTable_ReturnsColumns()
+    {
+        var reg = NewSqliteRegistry();
+        await SeedAsync(reg);
+
+        var output = await DatabaseTool.DbDescribeTable("mem", "t", reg, s_fmt);
+        Assert.Contains("id", output);
+        Assert.Contains("name", output);
+        Assert.Contains("val", output);
+    }
+
+    [Fact]
+    public async Task DbDescribeTable_InvalidName_ReturnsError()
+    {
+        var reg = NewSqliteRegistry();
+        var output = await DatabaseTool.DbDescribeTable("mem", "t; DROP TABLE x", reg, s_fmt);
+        Assert.StartsWith("SQL Error:", output);
+    }
+
+    [Fact]
+    public void DbListConnections_EmptyRegistry_ReportsEmpty()
+    {
+        var reg = new DbConnectionRegistry([]);
+        var output = DatabaseTool.DbListConnections(reg, s_fmt);
+        Assert.Contains("No database connections", output);
+    }
+
+    [Fact]
+    public void DbListConnections_WithConnections_ListsThem()
+    {
+        var reg = NewSqliteRegistry("foo");
+        var output = DatabaseTool.DbListConnections(reg, s_fmt);
+        Assert.Contains("foo", output);
+        Assert.Contains("sqlite", output);
+    }
+
+    [Fact]
+    public async Task DbQuery_InvalidParametersJson_ReturnsError()
+    {
+        var reg = NewSqliteRegistry();
+        await SeedAsync(reg);
+        var output = await DatabaseTool.DbQuery("mem", "SELECT 1", reg, s_fmt, parameters: "{bad json");
+        Assert.StartsWith("Error:", output);
+    }
+
+}
+
+public sealed class PostgresIntegrationTests : IClassFixture<PostgresContainerFixture>
+{
+    private readonly PostgresContainerFixture _fx;
+    private static readonly IOutputFormatter s_fmt = new MarkdownFormatter();
+
+    public PostgresIntegrationTests(PostgresContainerFixture fx) => _fx = fx;
+
+    [RequiresPsqlFact]
+    public async Task Postgres_SelectOne_ReturnsRow()
+    {
+        var reg = new DbConnectionRegistry([new PostgresDbProvider("pg", _fx.ConnectionString)]);
+        var output = await DatabaseTool.DbQuery("pg", "SELECT 1 AS n", reg, s_fmt);
+        Assert.Contains("1", output);
+    }
+
+    [RequiresPsqlFact]
+    public async Task Postgres_CreateInsertSelect_RoundTrip()
+    {
+        var reg = new DbConnectionRegistry([new PostgresDbProvider("pg", _fx.ConnectionString)]);
+        await DatabaseTool.DbExecute("pg", "CREATE TABLE IF NOT EXISTS widgets(id serial primary key, name text)", reg, s_fmt);
+        await DatabaseTool.DbExecute("pg", "INSERT INTO widgets(name) VALUES (@n)", reg, s_fmt, parameters: "{\"@n\": \"gizmo\"}");
+        var output = await DatabaseTool.DbQuery("pg", "SELECT name FROM widgets", reg, s_fmt);
+        Assert.Contains("gizmo", output);
+    }
+
+    [RequiresPsqlFact]
+    public async Task Postgres_DescribeTable_ReturnsColumns()
+    {
+        var reg = new DbConnectionRegistry([new PostgresDbProvider("pg", _fx.ConnectionString)]);
+        await DatabaseTool.DbExecute("pg", "CREATE TABLE IF NOT EXISTS widgets_desc(id serial primary key, name text, amount integer)", reg, s_fmt);
+        var output = await DatabaseTool.DbDescribeTable("pg", "widgets_desc", reg, s_fmt);
+        Assert.Contains("name", output);
+        Assert.Contains("amount", output);
+    }
+}
+
+public sealed class MssqlIntegrationTests : IClassFixture<MssqlContainerFixture>
+{
+    private readonly MssqlContainerFixture _fx;
+    private static readonly IOutputFormatter s_fmt = new MarkdownFormatter();
+
+    public MssqlIntegrationTests(MssqlContainerFixture fx) => _fx = fx;
+
+    [RequiresMssqlFact]
+    public async Task Mssql_SelectOne_ReturnsRow()
+    {
+        var reg = new DbConnectionRegistry([new MssqlDbProvider("sql", _fx.ConnectionString)]);
+        var output = await DatabaseTool.DbQuery("sql", "SELECT 1 AS n", reg, s_fmt);
+        Assert.Contains("1", output);
+    }
+
+    [RequiresMssqlFact]
+    public async Task Mssql_CreateInsertSelect_RoundTrip()
+    {
+        var reg = new DbConnectionRegistry([new MssqlDbProvider("sql", _fx.ConnectionString)]);
+        await DatabaseTool.DbExecute("sql", "CREATE TABLE widgets(id int identity primary key, name nvarchar(50))", reg, s_fmt);
+        await DatabaseTool.DbExecute("sql", "INSERT INTO widgets(name) VALUES (@n)", reg, s_fmt, parameters: "{\"@n\": \"gizmo\"}");
+        var output = await DatabaseTool.DbQuery("sql", "SELECT name FROM widgets", reg, s_fmt);
+        Assert.Contains("gizmo", output);
+    }
+
+    [RequiresMssqlFact]
+    public async Task Mssql_ListTables_IncludesCreated()
+    {
+        var reg = new DbConnectionRegistry([new MssqlDbProvider("sql", _fx.ConnectionString)]);
+        await DatabaseTool.DbExecute("sql", "CREATE TABLE listed_widgets(id int)", reg, s_fmt);
+        var output = await DatabaseTool.DbListTables("sql", reg, s_fmt, "dbo");
+        Assert.Contains("listed_widgets", output);
+    }
+}

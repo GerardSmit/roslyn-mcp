@@ -20,7 +20,8 @@ public static class CoverageService
     /// Runs dotnet test with coverage collection for a project. Returns a summary and caches results.
     /// </summary>
     public static async Task<CoverageResult> RunCoverageAsync(
-        string projectPath, string? filter = null, int timeoutSeconds = 300, CancellationToken cancellationToken = default)
+        string projectPath, string? filter = null, int timeoutSeconds = 300,
+        CancellationToken cancellationToken = default, BuildWarningsStore? warningsStore = null)
     {
         string csprojPath;
         if (projectPath.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase) && File.Exists(projectPath))
@@ -36,7 +37,7 @@ public static class CoverageService
         }
 
         if (PathHelper.RequiresMsBuild(csprojPath))
-            return await RunLegacyCoverageAsync(csprojPath, filter, timeoutSeconds, cancellationToken);
+            return await RunLegacyCoverageAsync(csprojPath, filter, timeoutSeconds, cancellationToken, warningsStore);
 
         // Create a temp directory for results to avoid conflicts
         string resultsDir = Path.Combine(Path.GetTempPath(), "roslyn-mcp-coverage", Guid.NewGuid().ToString("N"));
@@ -146,7 +147,8 @@ public static class CoverageService
     /// MSBuild + dotnet vstest + dotnet-coverage.
     /// </summary>
     private static async Task<CoverageResult> RunLegacyCoverageAsync(
-        string csprojPath, string? filter, int timeoutSeconds, CancellationToken cancellationToken)
+        string csprojPath, string? filter, int timeoutSeconds, CancellationToken cancellationToken,
+        BuildWarningsStore? warningsStore = null)
     {
         var msbuild = MsBuildLocator.FindMsBuild();
         if (msbuild is null)
@@ -197,8 +199,13 @@ public static class CoverageService
                 return new CoverageResult(false, TimeoutOrCancelled(), null);
             }
             if (buildProcess.ExitCode != 0)
-                return new CoverageResult(false,
-                    $"Build failed (exit code {buildProcess.ExitCode}).\n{buildOut}{buildErr}", null);
+            {
+                var msg = warningsStore is null
+                    ? $"Build failed (exit code {buildProcess.ExitCode}).\n{buildOut}{buildErr}"
+                    : BuildProjectTool.FormatBuildOutput(
+                        buildOut.ToString(), buildErr.ToString(), buildProcess.ExitCode, csprojPath, warningsStore);
+                return new CoverageResult(false, msg, null);
+            }
         }
 
         var targetPath = MsBuildLocator.GetTargetPath(csprojPath);

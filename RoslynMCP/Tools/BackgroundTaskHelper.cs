@@ -13,14 +13,14 @@ internal static class BackgroundTaskHelper
     /// <summary>Starts a build→test run in the background and returns a task ID.</summary>
     internal static string StartTestsBackground(
         string csprojPath, string? filter, bool build, int timeoutSeconds,
-        BackgroundTaskStore taskStore)
+        BackgroundTaskStore taskStore, BuildWarningsStore warningsStore)
     {
         var description = $"dotnet test {Path.GetFileNameWithoutExtension(csprojPath)}";
         if (!string.IsNullOrWhiteSpace(filter))
             description += $" --filter {filter}";
 
         var taskId = taskStore.CreateTask(BackgroundTaskStore.TaskKind.Tests, description);
-        _ = RunBuildThenTestAsync(taskId, csprojPath, filter, build, timeoutSeconds, taskStore);
+        _ = RunBuildThenTestAsync(taskId, csprojPath, filter, build, timeoutSeconds, taskStore, warningsStore);
 
         return $"Tests started in background{(build ? " (build → test)" : "")}.\n" +
                $"**Task ID:** `{taskId}`\n" +
@@ -32,53 +32,73 @@ internal static class BackgroundTaskHelper
     /// <summary>Starts a build in the background and returns a task ID.</summary>
     internal static string StartBuildBackground(
         string resolvedPath, string configuration,
-        BackgroundTaskStore taskStore)
+        BackgroundTaskStore taskStore, BuildWarningsStore warningsStore)
     {
+        string fileName;
+        string args;
+        string description;
+
         if (PathHelper.RequiresMsBuild(resolvedPath))
         {
             var msbuild = MsBuildLocator.FindMsBuild();
             if (msbuild is null)
                 return "Error: This project requires MSBuild (legacy .NET Framework project) but " +
                        "MSBuild could not be found. Install Visual Studio or Build Tools for Visual Studio.";
-
-            var description = $"msbuild {Path.GetFileName(resolvedPath)}";
-            var taskId = taskStore.CreateTask(BackgroundTaskStore.TaskKind.Build, description);
-            var args = $"\"{resolvedPath}\" /p:Configuration={configuration} /nologo /v:minimal";
-            _ = RunInBackgroundAsync(taskId, msbuild, args,
-                Path.GetDirectoryName(resolvedPath)!, 300, taskStore);
-
-            return $"Build started in background.\n**Task ID:** `{taskId}`\n\n" +
-                   $"You can continue working on other tasks. " +
-                   $"Check results later with `GetBackgroundTaskResult(\"{taskId}\")`.";
+            fileName = msbuild;
+            args = $"\"{resolvedPath}\" /p:Configuration={configuration} /nologo /v:minimal";
+            description = $"msbuild {Path.GetFileName(resolvedPath)}";
         }
         else
         {
-            var description = $"dotnet build {Path.GetFileName(resolvedPath)}";
-            var taskId = taskStore.CreateTask(BackgroundTaskStore.TaskKind.Build, description);
-            var args = $"build \"{resolvedPath}\" --verbosity quiet";
+            fileName = "dotnet";
+            args = $"build \"{resolvedPath}\" --nologo";
             if (!string.IsNullOrWhiteSpace(configuration))
                 args += $" -c {configuration}";
+            description = $"dotnet build {Path.GetFileName(resolvedPath)}";
+        }
 
-            _ = RunInBackgroundAsync(taskId, "dotnet", args,
-                Path.GetDirectoryName(resolvedPath)!, 300, taskStore);
+        var taskId = taskStore.CreateTask(BackgroundTaskStore.TaskKind.Build, description);
+        _ = RunBuildInBackgroundAsync(taskId, fileName, args,
+            Path.GetDirectoryName(resolvedPath)!, 300, resolvedPath, taskStore, warningsStore);
 
-            return $"Build started in background.\n**Task ID:** `{taskId}`\n\n" +
-                   $"You can continue working on other tasks. " +
-                   $"Check results later with `GetBackgroundTaskResult(\"{taskId}\")`.";
+        return $"Build started in background.\n**Task ID:** `{taskId}`\n\n" +
+               $"You can continue working on other tasks. " +
+               $"Check results later with `GetBackgroundTaskResult(\"{taskId}\")`.";
+    }
+
+    private static async Task RunBuildInBackgroundAsync(
+        string taskId, string fileName, string arguments,
+        string workingDirectory, int timeoutSeconds, string resolvedPath,
+        BackgroundTaskStore taskStore, BuildWarningsStore warningsStore)
+    {
+        try
+        {
+            var (exitCode, stdout, stderr) = await RunProcessAsync(
+                fileName, arguments, workingDirectory, timeoutSeconds);
+            var formatted = BuildProjectTool.FormatBuildOutput(stdout, stderr, exitCode, resolvedPath, warningsStore);
+            taskStore.Complete(taskId, formatted, exitCode);
+        }
+        catch (OperationCanceledException)
+        {
+            taskStore.Cancel(taskId, $"Build timed out after {timeoutSeconds} seconds.");
+        }
+        catch (Exception ex)
+        {
+            taskStore.Complete(taskId, $"Error: {ex.Message}", -1);
         }
     }
 
     /// <summary>Starts coverage collection in the background and returns a task ID.</summary>
     internal static string StartCoverageBackground(
         string csprojPath, string? filter,
-        BackgroundTaskStore taskStore)
+        BackgroundTaskStore taskStore, BuildWarningsStore warningsStore)
     {
         var description = $"coverage {Path.GetFileNameWithoutExtension(csprojPath)}";
         if (!string.IsNullOrWhiteSpace(filter))
             description += $" --filter {filter}";
 
         var taskId = taskStore.CreateTask(BackgroundTaskStore.TaskKind.Coverage, description);
-        _ = RunCoverageInBackgroundAsync(taskId, csprojPath, filter, taskStore);
+        _ = RunCoverageInBackgroundAsync(taskId, csprojPath, filter, taskStore, warningsStore);
 
         return $"Coverage collection started in background (build → test with coverage).\n" +
                $"**Task ID:** `{taskId}`\n\n" +
@@ -90,14 +110,14 @@ internal static class BackgroundTaskHelper
     /// <summary>Starts a MSBuild+VSTest run for a legacy .NET Framework project in the background.</summary>
     internal static string StartLegacyTestsBackground(
         string csprojPath, string? filter, bool build, int timeoutSeconds,
-        BackgroundTaskStore taskStore)
+        BackgroundTaskStore taskStore, BuildWarningsStore warningsStore)
     {
         var description = $"vstest {Path.GetFileNameWithoutExtension(csprojPath)}";
         if (!string.IsNullOrWhiteSpace(filter))
             description += $" /TestCaseFilter:{filter}";
 
         var taskId = taskStore.CreateTask(BackgroundTaskStore.TaskKind.Tests, description);
-        _ = RunBuildThenLegacyTestAsync(taskId, csprojPath, filter, build, timeoutSeconds, taskStore);
+        _ = RunBuildThenLegacyTestAsync(taskId, csprojPath, filter, build, timeoutSeconds, taskStore, warningsStore);
 
         return $"Tests started in background{(build ? " (build → vstest)" : "")}.\n" +
                $"**Task ID:** `{taskId}`\n" +
@@ -108,7 +128,7 @@ internal static class BackgroundTaskHelper
 
     private static async Task RunBuildThenLegacyTestAsync(
         string taskId, string csprojPath, string? filter, bool build,
-        int timeoutSeconds, BackgroundTaskStore taskStore)
+        int timeoutSeconds, BackgroundTaskStore taskStore, BuildWarningsStore warningsStore)
     {
         try
         {
@@ -129,15 +149,14 @@ internal static class BackgroundTaskHelper
                 var (buildExitCode, buildOutput, buildErrors) = await RunProcessAsync(
                     msbuild, buildArgs, workingDirectory, Math.Max(60, timeoutSeconds / 2));
 
+                result.AppendLine(BuildProjectTool.FormatBuildOutput(
+                    buildOutput, buildErrors, buildExitCode, csprojPath, warningsStore));
+
                 if (buildExitCode != 0)
                 {
-                    result.AppendLine("❌ **Build failed** — tests were not started.");
-                    AppendProcessOutput(result, buildOutput, buildErrors, buildExitCode);
                     taskStore.Complete(taskId, result.ToString(), buildExitCode);
                     return;
                 }
-
-                result.AppendLine("✅ **Build succeeded**");
             }
 
             var targetPath = MsBuildLocator.GetTargetPath(csprojPath);
@@ -172,7 +191,7 @@ internal static class BackgroundTaskHelper
 
     private static async Task RunBuildThenTestAsync(
         string taskId, string csprojPath, string? filter, bool build,
-        int timeoutSeconds, BackgroundTaskStore taskStore)
+        int timeoutSeconds, BackgroundTaskStore taskStore, BuildWarningsStore warningsStore)
     {
         try
         {
@@ -181,19 +200,18 @@ internal static class BackgroundTaskHelper
 
             if (build)
             {
-                var buildArgs = $"build \"{csprojPath}\" --verbosity quiet";
+                var buildArgs = $"build \"{csprojPath}\" --nologo";
                 var (buildExitCode, buildOutput, buildErrors) = await RunProcessAsync(
                     "dotnet", buildArgs, workingDirectory, timeoutSeconds / 2);
 
+                result.AppendLine(BuildProjectTool.FormatBuildOutput(
+                    buildOutput, buildErrors, buildExitCode, csprojPath, warningsStore));
+
                 if (buildExitCode != 0)
                 {
-                    result.AppendLine("❌ **Build failed** — tests were not started.");
-                    AppendProcessOutput(result, buildOutput, buildErrors, buildExitCode);
                     taskStore.Complete(taskId, result.ToString(), buildExitCode);
                     return;
                 }
-
-                result.AppendLine("✅ **Build succeeded**");
             }
 
             var testArgs = new StringBuilder();
@@ -323,11 +341,11 @@ internal static class BackgroundTaskHelper
 
     private static async Task RunCoverageInBackgroundAsync(
         string taskId, string csprojPath, string? filter,
-        BackgroundTaskStore taskStore)
+        BackgroundTaskStore taskStore, BuildWarningsStore warningsStore)
     {
         try
         {
-            var result = await CoverageService.RunCoverageAsync(csprojPath, filter, 300, CancellationToken.None);
+            var result = await CoverageService.RunCoverageAsync(csprojPath, filter, 300, CancellationToken.None, warningsStore);
             taskStore.Complete(taskId, result.Message, result.Success ? 0 : 1);
         }
         catch (Exception ex)
