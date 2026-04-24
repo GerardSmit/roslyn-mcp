@@ -90,13 +90,82 @@ public static class DatabaseTool
         }
     }
 
+    [McpServerTool, Description(
+        "Register a new database connection at runtime. Provider must be one of: psql, mssql, sqlite. " +
+        "The connection string may also use the xml:/json: config-file syntax (see ConnectionStringResolver). " +
+        "If the alias already exists the call fails unless replaceExisting is true.")]
+    public static async Task<string> DbAddConnection(
+        [Description("Alias to register the connection under. Used by subsequent db_* calls.")]
+        string alias,
+        [Description("Provider token: psql (postgres/postgresql), mssql (sqlserver/sql), or sqlite.")]
+        string provider,
+        [Description(
+            "Connection string, or a 'xml:<path>#<name>' / 'json:<path>#<name>' reference.")]
+        string connectionString,
+        DbConnectionRegistry db,
+        IOutputFormatter fmt,
+        [Description("If true, replaces an existing alias. Default false.")]
+        bool replaceExisting = false,
+        CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(alias)) return "Error: alias cannot be empty.";
+        if (string.IsNullOrWhiteSpace(provider)) return "Error: provider cannot be empty.";
+        if (string.IsNullOrWhiteSpace(connectionString)) return "Error: connectionString cannot be empty.";
+
+        if (!replaceExisting && db.Get(alias) is not null)
+            return $"Error: alias '{alias}' already exists. Pass replaceExisting=true to replace it.";
+
+        string resolved;
+        try { resolved = ConnectionStringResolver.Resolve(connectionString); }
+        catch (Exception ex) { return $"Error resolving connection string: {ex.Message}"; }
+
+        IDbProvider newProvider;
+        try { newProvider = DbProviderFactory.Create(provider, alias, resolved); }
+        catch (ArgumentException ex) { return $"Error: {ex.Message}"; }
+
+        try
+        {
+            await newProvider.GetTablesAsync(schema: null, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            return $"Error: connection test failed: {ex.Message}";
+        }
+
+        if (replaceExisting) db.AddOrReplace(newProvider);
+        else if (!db.TryAdd(newProvider))
+            return $"Error: alias '{alias}' already exists. Pass replaceExisting=true to replace it.";
+
+        var sb = new StringBuilder();
+        fmt.AppendField(sb, "Added", $"{newProvider.Alias} ({newProvider.ProviderName})");
+        fmt.AppendField(sb, "Total connections", db.All.Count);
+        return sb.ToString();
+    }
+
+    [McpServerTool, Description("Remove a database connection registered at runtime or via --db.")]
+    public static string DbRemoveConnection(
+        [Description("Alias of the connection to remove.")]
+        string alias,
+        DbConnectionRegistry db,
+        IOutputFormatter fmt)
+    {
+        if (string.IsNullOrWhiteSpace(alias)) return "Error: alias cannot be empty.";
+        if (!db.Remove(alias))
+            return $"Error: no connection with alias '{alias}'.";
+
+        var sb = new StringBuilder();
+        fmt.AppendField(sb, "Removed", alias);
+        fmt.AppendField(sb, "Total connections", db.All.Count);
+        return sb.ToString();
+    }
+
     [McpServerTool, Description("List all configured database connections.")]
     public static string DbListConnections(DbConnectionRegistry db, IOutputFormatter fmt)
     {
         var sb = new StringBuilder();
         if (db.All.Count == 0)
         {
-            fmt.AppendEmpty(sb, "No database connections configured. Pass --db <alias>=<provider>:<connstr> to the server.");
+            fmt.AppendEmpty(sb, "No database connections configured. Register one with db_add_connection, or pass --db <alias>=<provider>:<connstr> to the server.");
             return sb.ToString();
         }
         var rows = db.All

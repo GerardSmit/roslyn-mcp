@@ -560,6 +560,117 @@ public sealed class DatabaseToolTests
         Assert.StartsWith("Error:", output);
     }
 
+    // ---------------------------------------------------------------------
+    // Runtime add/remove
+    // ---------------------------------------------------------------------
+
+    private static string NewSharedMemoryConnStr() =>
+        $"Data Source=file:{Guid.NewGuid():N}?mode=memory&cache=shared";
+
+    [Fact]
+    public async Task DbAddConnection_Sqlite_Registers()
+    {
+        var reg = new DbConnectionRegistry([]);
+        var output = await DatabaseTool.DbAddConnection(
+            "newdb", "sqlite", NewSharedMemoryConnStr(), reg, s_fmt);
+
+        Assert.Contains("Added", output);
+        Assert.NotNull(reg.Get("newdb"));
+        Assert.IsType<SqliteDbProvider>(reg.Get("newdb"));
+    }
+
+    [Fact]
+    public async Task DbAddConnection_ExistingAlias_WithoutReplace_Errors()
+    {
+        var reg = NewSqliteRegistry("mem");
+        var output = await DatabaseTool.DbAddConnection(
+            "mem", "sqlite", NewSharedMemoryConnStr(), reg, s_fmt);
+
+        Assert.StartsWith("Error:", output);
+        Assert.Contains("already exists", output);
+    }
+
+    [Fact]
+    public async Task DbAddConnection_ExistingAlias_WithReplace_Replaces()
+    {
+        var reg = NewSqliteRegistry("mem");
+        var first = reg.Get("mem");
+
+        var newConnStr = NewSharedMemoryConnStr();
+        var output = await DatabaseTool.DbAddConnection(
+            "mem", "sqlite", newConnStr, reg, s_fmt, replaceExisting: true);
+
+        Assert.Contains("Added", output);
+        Assert.NotSame(first, reg.Get("mem"));
+    }
+
+    [Fact]
+    public async Task DbAddConnection_UnknownProvider_Errors()
+    {
+        var reg = new DbConnectionRegistry([]);
+        var output = await DatabaseTool.DbAddConnection("x", "bogus", "x=y", reg, s_fmt);
+        Assert.StartsWith("Error:", output);
+    }
+
+    [Fact]
+    public async Task DbAddConnection_BadConnectionString_Errors()
+    {
+        var reg = new DbConnectionRegistry([]);
+        var output = await DatabaseTool.DbAddConnection(
+            "bad", "sqlite", "Data Source=|?|?|:invalid/path/does/not/exist/\\/:", reg, s_fmt);
+
+        Assert.StartsWith("Error:", output);
+        Assert.Null(reg.Get("bad"));
+    }
+
+    [Fact]
+    public async Task DbAddConnection_EmptyAlias_Errors()
+    {
+        var reg = new DbConnectionRegistry([]);
+        var output = await DatabaseTool.DbAddConnection("", "sqlite", NewSharedMemoryConnStr(), reg, s_fmt);
+        Assert.StartsWith("Error:", output);
+    }
+
+    [Fact]
+    public void DbRemoveConnection_Existing_Removes()
+    {
+        var reg = NewSqliteRegistry("gone");
+        var output = DatabaseTool.DbRemoveConnection("gone", reg, s_fmt);
+
+        Assert.Contains("Removed", output);
+        Assert.Null(reg.Get("gone"));
+    }
+
+    [Fact]
+    public void DbRemoveConnection_Missing_Errors()
+    {
+        var reg = new DbConnectionRegistry([]);
+        var output = DatabaseTool.DbRemoveConnection("nope", reg, s_fmt);
+        Assert.StartsWith("Error:", output);
+    }
+
+    [Fact]
+    public async Task DbAddConnection_XmlReference_ResolvesConnectionString()
+    {
+        var xmlPath = WriteTempFile(".config", """
+            <?xml version="1.0"?>
+            <configuration>
+              <connectionStrings>
+                <add name="Local" connectionString="Data Source=:memory:" />
+              </connectionStrings>
+            </configuration>
+            """);
+        try
+        {
+            var reg = new DbConnectionRegistry([]);
+            var output = await DatabaseTool.DbAddConnection(
+                "xref", "sqlite", $"xml:{xmlPath}#Local", reg, s_fmt);
+
+            Assert.Contains("Added", output);
+            Assert.NotNull(reg.Get("xref"));
+        }
+        finally { File.Delete(xmlPath); }
+    }
 }
 
 public sealed class PostgresIntegrationTests : IClassFixture<PostgresContainerFixture>

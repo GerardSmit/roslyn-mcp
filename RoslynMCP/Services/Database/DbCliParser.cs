@@ -2,17 +2,6 @@ namespace RoslynMCP.Services.Database;
 
 public static class DbCliParser
 {
-    private static readonly Dictionary<string, string> s_providerAliases = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["psql"] = "psql",
-        ["postgres"] = "psql",
-        ["postgresql"] = "psql",
-        ["mssql"] = "mssql",
-        ["sqlserver"] = "mssql",
-        ["sql"] = "mssql",
-        ["sqlite"] = "sqlite",
-    };
-
     public static IReadOnlyList<IDbProvider> Parse(string[] args)
     {
         var providers = new List<IDbProvider>();
@@ -42,7 +31,7 @@ public static class DbCliParser
             if (colon > 0)
             {
                 var maybeProvider = afterEq[..colon];
-                if (s_providerAliases.ContainsKey(maybeProvider))
+                if (DbProviderFactory.IsKnownProviderToken(maybeProvider))
                 {
                     alias = leftOfEq;
                     rest = afterEq;
@@ -56,7 +45,7 @@ public static class DbCliParser
             throw new ArgumentException($"--db value '{value}' is missing a provider prefix (e.g. 'psql:', 'mssql:', 'sqlite:').");
 
         var providerToken = rest[..firstColon];
-        if (!s_providerAliases.TryGetValue(providerToken, out var canonical))
+        if (!DbProviderFactory.TryCanonicalize(providerToken, out var canonical))
             throw new ArgumentException($"--db value '{value}' has unknown provider '{providerToken}'. Use psql, mssql, or sqlite.");
 
         var connRef = rest[(firstColon + 1)..];
@@ -66,12 +55,6 @@ public static class DbCliParser
         var connStr = ConnectionStringResolver.Resolve(connRef);
         alias ??= canonical;
 
-        return canonical switch
-        {
-            "psql" => new PostgresDbProvider(alias, connStr),
-            "mssql" => new MssqlDbProvider(alias, connStr),
-            "sqlite" => new SqliteDbProvider(alias, connStr),
-            _ => throw new InvalidOperationException($"Unreachable provider '{canonical}'."),
-        };
+        return DbProviderFactory.Create(canonical, alias, connStr);
     }
 }
