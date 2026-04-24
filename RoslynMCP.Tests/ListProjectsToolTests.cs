@@ -34,8 +34,9 @@ public class ListProjectsToolTests
     {
         var result = await ListProjectsTool.ListProjects(fmt: new RoslynMCP.Services.MarkdownFormatter(),path: FixturePaths.SampleProjectDir);
 
-        // Should find SampleProject.csproj in the directory
-        Assert.Contains("SampleProject", result);
+        // Walks up to nearest solution and lists its projects.
+        Assert.Contains("RoslynMCP", result);
+        Assert.Contains("project", result, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -186,7 +186,7 @@ public class SemanticSymbolSearchToolTests
             query: "Console",
             includeReferencedAssemblies: true);
 
-        Assert.Contains("referenced assemblies", result);
+        Assert.Contains("Referenced assemblies", result, StringComparison.OrdinalIgnoreCase);
         // Should find System.Console or similar from framework references
         Assert.Contains("Console", result);
     }
@@ -207,7 +207,7 @@ public class SemanticSymbolSearchToolTests
         var result = await SemanticSymbolSearchTool.SemanticSymbolSearch(fmt: new RoslynMCP.Services.MarkdownFormatter(),
             filePath: FixturePaths.CalculatorFile, query: "Calculator");
 
-        Assert.Contains("source project(s)", result);
+        Assert.Contains("Projects searched", result);
     }
 
     [Fact]

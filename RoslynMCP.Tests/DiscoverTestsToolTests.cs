@@ -27,7 +27,7 @@ public class DiscoverTestsToolTests
         var result = await RoslynMCP.Tools.DiscoverTestsTool.DiscoverTests(testProjectPath, fmt: new RoslynMCP.Services.MarkdownFormatter());
 
         Assert.Contains("Test Discovery", result);
-        Assert.Contains("test method(s)", result);
+        Assert.Contains("Tests found", result);
         Assert.Contains("xUnit", result);
     }
 
