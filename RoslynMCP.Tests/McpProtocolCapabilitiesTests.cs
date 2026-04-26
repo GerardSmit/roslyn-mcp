@@ -58,13 +58,14 @@ public class McpProtocolCapabilitiesTests
     [Fact]
     public async Task McpInitializeResponseIncludesToolsCapability()
     {
-        var exe = FindServerExecutable();
-        Assert.True(File.Exists(exe), $"Server executable not found: {exe}");
+        var (fileName, arguments) = FindServerLaunchArgs();
+        Assert.True(fileName is not null, "Server binary/dll not found in any known output directory");
 
         var initMsg = """{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"1.0"}}}""";
 
-        var psi = new System.Diagnostics.ProcessStartInfo(exe)
+        var psi = new System.Diagnostics.ProcessStartInfo(fileName!)
         {
+            Arguments = arguments,
             UseShellExecute = false,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
@@ -84,17 +85,36 @@ public class McpProtocolCapabilitiesTests
         Assert.Contains("\"tools\"", stdout, StringComparison.Ordinal);
     }
 
-    private static string FindServerExecutable()
+    private static (string? fileName, string arguments) FindServerLaunchArgs()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
         {
             if (File.Exists(Path.Combine(dir.FullName, "RoslynMCP.sln")))
             {
-                return Path.Combine(dir.FullName, "RoslynMCP", "bin", "Debug", "net10.0", "RoslynMCP.exe");
+                var repoRoot = dir.FullName;
+                var configurations = new[] { "Release", "Debug" };
+
+                foreach (var config in configurations)
+                {
+                    var outputDir = Path.Combine(repoRoot, "RoslynMCP", "bin", config, "net10.0");
+
+                    // Prefer native app host (.exe on Windows, no extension on Linux/macOS)
+                    var exeExt = OperatingSystem.IsWindows() ? ".exe" : "";
+                    var exe = Path.Combine(outputDir, $"RoslynMCP{exeExt}");
+                    if (File.Exists(exe))
+                        return (exe, "");
+
+                    // Fall back to dotnet <dll> (used when UseAppHost=false)
+                    var dll = Path.Combine(outputDir, "RoslynMCP.dll");
+                    if (File.Exists(dll))
+                        return ("dotnet", dll);
+                }
+
+                return (null, "");
             }
             dir = dir.Parent!;
         }
-        throw new InvalidOperationException("Could not locate repository root.");
+        return (null, "");
     }
 }
