@@ -69,7 +69,10 @@ public class McpProtocolCapabilitiesTests
             UseShellExecute = false,
             RedirectStandardInput = true,
             RedirectStandardOutput = true,
-            RedirectStandardError = true
+            // Do NOT redirect stderr: leaving it unredirected prevents a pipe deadlock
+            // where the server blocks on writing logs to stderr (filling the buffer)
+            // before it can write the initialize response to stdout.
+            RedirectStandardError = false
         };
 
         using var proc = System.Diagnostics.Process.Start(psi)!;
