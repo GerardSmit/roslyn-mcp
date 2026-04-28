@@ -73,24 +73,89 @@ public class AutoConnectionStringDiscoveryTests : IDisposable
     }
 
     [Fact]
-    public void EnvironmentSpecificAppSettingsOverridesBase()
+    public void DevelopmentAppSettingsOverridesBase()
     {
         var dir = MakeProject("Api");
+        // Different providers per file so we can tell which file won by inspecting
+        // the resulting IDbProvider's ProviderName.
         File.WriteAllText(Path.Combine(dir, "appsettings.json"), """
         {"ConnectionStrings":{"Default":"Server=prod;Database=Api;Integrated Security=true"}}
         """);
         File.WriteAllText(Path.Combine(dir, "appsettings.Development.json"), """
-        {"ConnectionStrings":{"Default":"Server=dev;Database=Api;Integrated Security=true"}}
+        {"ConnectionStrings":{"Default":"Host=devbox;Port=5432;Username=dev;Password=p;Database=api"}}
         """);
 
         var providers = AutoConnectionStringDiscovery.Discover(_root);
 
         var def = Assert.Single(providers);
         Assert.Equal("Api_Default", def.Alias);
-        // Development variant wins (alphabetical sort puts base first, env-specific later overrides).
-        // We can't read the connection string back from IDbProvider directly, so this is verified
-        // via the CLI parser/integration, but the override behavior is exercised here as the
-        // single-result count proves dedupe by alias.
+        Assert.Equal("psql", def.ProviderName);
+    }
+
+    [Fact]
+    public void ProductionAppSettingsAreSkipped()
+    {
+        var dir = MakeProject("Api");
+        File.WriteAllText(Path.Combine(dir, "appsettings.Production.json"), """
+        {"ConnectionStrings":{"Default":"Server=prod;Database=Api;Integrated Security=true"}}
+        """);
+
+        var providers = AutoConnectionStringDiscovery.Discover(_root);
+        Assert.Empty(providers);
+    }
+
+    [Fact]
+    public void DevelopmentBeatsOtherEnvironmentSpecificFiles()
+    {
+        var dir = MakeProject("Api");
+        File.WriteAllText(Path.Combine(dir, "appsettings.json"), """
+        {"ConnectionStrings":{"Default":"Server=base;Database=Api;Integrated Security=true"}}
+        """);
+        // Custom env (alphabetically AFTER Development) — should still lose to Development.
+        File.WriteAllText(Path.Combine(dir, "appsettings.Custom.json"), """
+        {"ConnectionStrings":{"Default":"Data Source=custom.db"}}
+        """);
+        File.WriteAllText(Path.Combine(dir, "appsettings.Development.json"), """
+        {"ConnectionStrings":{"Default":"Host=devbox;Port=5432;Username=dev;Password=p;Database=api"}}
+        """);
+
+        var providers = AutoConnectionStringDiscovery.Discover(_root);
+        var def = Assert.Single(providers);
+        Assert.Equal("psql", def.ProviderName);
+    }
+
+    [Fact]
+    public void WebDebugConfigBeatsWebReleaseConfig()
+    {
+        var dir = MakeProject("Legacy");
+        File.WriteAllText(Path.Combine(dir, "web.config"), """
+        <?xml version="1.0"?>
+        <configuration>
+            <connectionStrings>
+                <add name="Default" connectionString="Server=base;Database=Foo;Integrated Security=true" providerName="System.Data.SqlClient" />
+            </connectionStrings>
+        </configuration>
+        """);
+        File.WriteAllText(Path.Combine(dir, "web.Release.config"), """
+        <?xml version="1.0"?>
+        <configuration xmlns:xdt="http://schemas.microsoft.com/XML-Document-Transform">
+            <connectionStrings>
+                <add name="Default" connectionString="Data Source=release.db" providerName="System.Data.SQLite" xdt:Transform="SetAttributes" xdt:Locator="Match(name)" />
+            </connectionStrings>
+        </configuration>
+        """);
+        File.WriteAllText(Path.Combine(dir, "web.Debug.config"), """
+        <?xml version="1.0"?>
+        <configuration xmlns:xdt="http://schemas.microsoft.com/XML-Document-Transform">
+            <connectionStrings>
+                <add name="Default" connectionString="Host=dev;Port=5432;Username=u;Password=p;Database=d" providerName="Npgsql" xdt:Transform="SetAttributes" xdt:Locator="Match(name)" />
+            </connectionStrings>
+        </configuration>
+        """);
+
+        var providers = AutoConnectionStringDiscovery.Discover(_root);
+        var def = Assert.Single(providers);
+        Assert.Equal("psql", def.ProviderName);
     }
 
     [Fact]
@@ -332,6 +397,9 @@ public class AutoConnectionStringDiscoveryTests : IDisposable
     [InlineData("appsettings.example.json", false)]
     [InlineData("appsettings.sample.json", false)]
     [InlineData("appsettings.dist.json", false)]
+    [InlineData("appsettings.Production.json", false)]
+    [InlineData("appsettings.Staging.json", false)]
+    [InlineData("appsettings.Live.json", false)]
     [InlineData("appsettingsfoo.json", false)]
     [InlineData("settings.json", false)]
     public void IsConfigFileMatchesExpected(string name, bool expected)

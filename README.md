@@ -360,16 +360,25 @@ Plain relative paths (no placeholder) resolve in this order: CWD → solutionRoo
 
 #### Auto-discovery from project config files
 
-At startup the server scans the working directory tree for `web.config`, `app.config`, and `appsettings*.json` files and registers any connection strings it finds. The alias is `ProjectName_ConnectionStringName` (project name comes from the nearest `*.csproj` walking up; non-alphanumerics are replaced with `_`). Environment-specific files like `appsettings.Development.json` override the base file. Aliases registered via explicit `--db` flags always win over auto-discovered ones with the same name.
+At startup the server scans the working directory tree for `web.config`, `app.config`, and `appsettings*.json` files and registers any connection strings it finds. The alias is `ProjectName_ConnectionStringName` (project name comes from the nearest `*.csproj` walking up; non-alphanumerics are replaced with `_`). Aliases registered via explicit `--db` flags always win over auto-discovered ones with the same name.
+
+**Development-first by design.** RoslynSense is a development-time tool, so giving an LLM easy access to a production database is the wrong default. The merge order is:
+
+1. Base file (`appsettings.json`, `web.config`, `app.config`) — applied first.
+2. Other environment-specific files — override the base.
+3. Development-flavored files (`appsettings.Development.json`, `appsettings.Local.json`, `web.Debug.config`, `app.Debug.config`) — applied last, overriding everything else.
+
+Production-flavored env names are **not loaded at all**: `Production`, `Prod`, `Live`, `Staging`, `Stage`. If you really need to register prod credentials, do it explicitly with `--db`.
+
+`web.<env>.config` / `app.<env>.config` are XDT transform files but commonly carry the only real local-dev connection string, so they are parsed alongside the base. The `xdt:` namespace is ignored on attribute reads; `xdt:Transform="Remove"` / `RemoveAll` on either an `<add>` entry or the `<connectionStrings>` section is honored.
 
 Files and entries that are **skipped** with a stderr warning:
 
 - `appsettings.{template,example,sample,dist}.json` and `web.{template,example,sample,dist}.config` — non-runtime templates committed without secrets.
+- `appsettings.Production.json`, `web.Production.config`, etc. — production env names (see above).
 - `<connectionStrings configProtectionProvider="…">` — encrypted via `aspnet_regiis -pe`; the ciphertext is unusable at runtime.
 - `<add xdt:Transform="Remove"/>` and `<connectionStrings xdt:Transform="RemoveAll"/>` inside transform files.
 - Empty values and unfilled placeholders: `${VAR}`, `$(VAR)`, `{{VAR}}`, `#{VAR}`, `%VAR%`, `<your connection string>`.
-
-`web.<env>.config` / `app.<env>.config` (e.g. `web.Debug.config`) **are** parsed — these are XDT transforms but commonly carry the only real local-dev connection string. Connection strings declared there override the base file when both define the same name. Files are merged alphabetically (case-insensitive), so `web.Release.config` wins over `web.Debug.config` if both define the same connection.
 
 The provider for each connection string is resolved in this order — first match wins:
 

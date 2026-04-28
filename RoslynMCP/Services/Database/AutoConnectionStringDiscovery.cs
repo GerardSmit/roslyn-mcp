@@ -33,6 +33,23 @@ public static class AutoConnectionStringDiscovery
         "template", "example", "sample", "dist"
     };
 
+    // Production-flavored environment names. Skipped entirely so the LLM can't
+    // reach a production database through this tool by accident — RoslynSense is
+    // a development-time tool and registering prod credentials is asking for
+    // trouble. Use --db explicitly if you really need prod access.
+    private static readonly HashSet<string> s_prodEnvNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Production", "Prod", "Live", "Staging", "Stage"
+    };
+
+    // Development-flavored environment names. These have the highest priority
+    // when merging connection strings — they override the base file and any
+    // non-dev environment-specific file.
+    private static readonly HashSet<string> s_devEnvNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Development", "Dev", "Local", "Debug"
+    };
+
     // Cap recursion to guard against symlink loops and unbounded scans.
     private const int MaxDirectoryDepth = 32;
 
@@ -54,8 +71,13 @@ public static class AutoConnectionStringDiscovery
         if (!Directory.Exists(rootDir))
             return Array.Empty<IDbProvider>();
 
-        var files = EnumerateConfigFiles(rootDir).ToList();
-        files.Sort(StringComparer.OrdinalIgnoreCase);
+        // Sort so that lower-priority files apply first and dev-flavored files
+        // (Development / Debug / Local) apply last, overriding other entries.
+        // Tiebreak alphabetically for determinism.
+        var files = EnumerateConfigFiles(rootDir)
+            .OrderBy(GetFilePriority)
+            .ThenBy(f => f, StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
         var projectCache = new Dictionary<string, ProjectContext>(StringComparer.OrdinalIgnoreCase);
         var results = new Dictionary<string, IDbProvider>(StringComparer.OrdinalIgnoreCase);
@@ -147,30 +169,54 @@ public static class AutoConnectionStringDiscovery
 
     internal static bool IsConfigFile(string fileName)
     {
-        // .NET Framework / desktop / console runtime configs:
-        //   web.config, app.config, plus their XDT transform variants
-        //   (web.Debug.config, web.Release.config) which often carry the only
-        //   real connection string for local dev.
+        var (matched, env) = ClassifyConfigFile(fileName);
+        if (!matched) return false;
+        if (env is null) return true;
+        if (s_templateInfixes.Contains(env)) return false;
+        if (s_prodEnvNames.Contains(env)) return false;
+        return true;
+    }
+
+    /// <summary>
+    /// Returns whether <paramref name="fileName"/> is a recognized config file and,
+    /// if so, the environment qualifier (e.g. "Development" for
+    /// "appsettings.Development.json"). <c>env</c> is null for the base file.
+    /// </summary>
+    private static (bool matched, string? env) ClassifyConfigFile(string fileName)
+    {
         if (TryMatchDotNetFrameworkConfig(fileName, "web", out var fxEnv) ||
             TryMatchDotNetFrameworkConfig(fileName, "app", out fxEnv))
-        {
-            return fxEnv is null || !s_templateInfixes.Contains(fxEnv);
-        }
+            return (true, fxEnv);
 
-        // .NET Core / 5+ runtime configs: `appsettings.json` or `appsettings.<env>.json`.
         if (fileName.StartsWith("appsettings", StringComparison.OrdinalIgnoreCase) &&
             fileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
         {
             const int prefixLen = 11;  // "appsettings"
             const int suffixLen = 5;   // ".json"
             var middleLen = fileName.Length - prefixLen - suffixLen;
-            if (middleLen == 0) return true; // appsettings.json
-            if (fileName[prefixLen] != '.') return false;
+            if (middleLen == 0) return (true, null);
+            if (fileName[prefixLen] != '.') return (false, null);
             var env = fileName.Substring(prefixLen + 1, middleLen - 1);
-            return !s_templateInfixes.Contains(env);
+            if (env.Length == 0) return (false, null);
+            return (true, env);
         }
 
-        return false;
+        return (false, null);
+    }
+
+    /// <summary>
+    /// Lower-priority files apply first. Higher-priority files override them.
+    /// 0: base config (<c>appsettings.json</c>, <c>web.config</c>, <c>app.config</c>).
+    /// 1: any other environment-specific config.
+    /// 2: development-flavored env (<c>Development</c>, <c>Dev</c>, <c>Local</c>, <c>Debug</c>).
+    /// </summary>
+    private static int GetFilePriority(string filePath)
+    {
+        var fileName = Path.GetFileName(filePath);
+        var (_, env) = ClassifyConfigFile(fileName);
+        if (env is null) return 0;
+        if (s_devEnvNames.Contains(env)) return 2;
+        return 1;
     }
 
     private static bool TryMatchDotNetFrameworkConfig(string fileName, string prefix, out string? env)
