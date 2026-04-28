@@ -77,15 +77,39 @@ public class McpProtocolCapabilitiesTests
 
         using var proc = System.Diagnostics.Process.Start(psi)!;
         await proc.StandardInput.WriteLineAsync(initMsg);
-        await Task.Delay(500);
-        proc.Kill();
+        await proc.StandardInput.FlushAsync();
 
-        var stdout = await proc.StandardOutput.ReadToEndAsync();
+        // Read stdout line-by-line until we receive the initialize response, with a
+        // generous timeout. Process startup on Windows CI can take several seconds,
+        // so a fixed Task.Delay is unreliable; killing the process before it has
+        // flushed the response would also lose stdout.
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        string? responseLine = null;
+        try
+        {
+            while (await proc.StandardOutput.ReadLineAsync(cts.Token) is { } line)
+            {
+                if (line.Contains("\"jsonrpc\"", StringComparison.Ordinal))
+                {
+                    responseLine = line;
+                    break;
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // fall through; assertion below will report empty/missing response
+        }
+
+        if (!proc.HasExited)
+        {
+            proc.Kill();
+        }
 
         // The initialize response must declare the "tools" capability.
         // When this is absent, Copilot refuses to call tools/list.
-        Assert.NotEmpty(stdout);
-        Assert.Contains("\"tools\"", stdout, StringComparison.Ordinal);
+        Assert.False(string.IsNullOrEmpty(responseLine), "No JSON-RPC response received from MCP server within 30s");
+        Assert.Contains("\"tools\"", responseLine!, StringComparison.Ordinal);
     }
 
     private static (string? fileName, string arguments) FindServerLaunchArgs()
