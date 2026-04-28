@@ -195,6 +195,95 @@ Example with Razor disabled:
 }
 ```
 
+### Configuration file (`roslynsense.json`)
+
+Drop a `roslynsense.json` next to your solution (or anywhere up the tree from where the server is launched) to configure RoslynSense per-project without editing every MCP client. The server walks up from the working directory and uses the **nearest** file found.
+
+```json
+{
+    "tools": {
+        "webForms": true,
+        "razor": true,
+        "debugger": true,
+        "profiling": true,
+        "database": true
+    },
+    "database": {
+        "autoDiscovery": null,
+        "connections": {
+            "myapp": "psql:Host=localhost;Database=myapp;Username=dev;Password=dev",
+            "reports": {
+                "provider": "mssql",
+                "connectionString": "Server=.;Database=Reports;Integrated Security=true"
+            }
+        }
+    },
+    "tableFormat": "toon"
+}
+```
+
+**Precedence: CLI flag > config file > default.** Per-field for booleans, per-alias for connections.
+
+<details>
+<summary>Field reference</summary>
+
+| Path | Type | Default | Equivalent CLI flag |
+|------|------|---------|---------------------|
+| `tools.webForms` | bool | `true` | `--no-webforms` forces `false` |
+| `tools.razor` | bool | `true` | `--no-razor` forces `false` |
+| `tools.debugger` | bool | `true` | `--no-debugger` forces `false` |
+| `tools.profiling` | bool | `true` | `--no-profiling` forces `false` |
+| `tools.database` | bool | `true` | `--no-db` forces `false` |
+| `database.autoDiscovery` | bool? | `null` | `--no-auto-db` forces `false` |
+| `database.connections` | object | `{}` | `--db` overrides matching alias |
+| `tableFormat` | string? | `null` | `--toon` forces `"toon"` |
+
+**`autoDiscovery` semantics:**
+
+- `null` (default) — auto-discovery runs **only when no explicit registrations exist** (CLI `--db` or config `connections`).
+- `true` — auto-discovery always runs in addition to explicit registrations. Explicit aliases still win on conflict.
+- `false` — auto-discovery skipped entirely.
+
+</details>
+
+<details>
+<summary>Connection entry formats</summary>
+
+Two equivalent forms — pick whichever reads better. The string form mirrors `--db <provider>:<connstr>` shorthand.
+
+**Shorthand string:**
+
+```json
+"connections": {
+    "myapp": "psql:Host=localhost;Database=myapp;Username=u;Password=p"
+}
+```
+
+**Object form:**
+
+```json
+"connections": {
+    "reports": {
+        "provider": "mssql",
+        "connectionString": "Server=.;Database=Reports;Integrated Security=true"
+    }
+}
+```
+
+The connection-string portion accepts the same `xml:` / `json:` indirection and `${gitRoot}` / `${solutionRoot}` / `${env:NAME}` placeholders documented under [Referencing connection strings from config files](#referencing-connection-strings-from-config-files).
+
+</details>
+
+<details>
+<summary>Loader behavior</summary>
+
+- Walks up from `Directory.GetCurrentDirectory()` to the filesystem root, stopping at the **first** `roslynsense.json` found.
+- Lenient JSON: line/block comments, trailing commas, and unknown properties are accepted. Unknown properties are silently ignored for forward compatibility.
+- Invalid JSON is logged to stderr; the server starts with defaults.
+- Per-connection parse failures (unknown provider, empty value) are logged as warnings and the entry is skipped.
+
+</details>
+
 ## Tools
 
 ### Code Analysis
@@ -320,16 +409,7 @@ Provider tokens: `psql` / `postgres` / `postgresql`, `mssql` / `sqlserver` / `sq
 
 #### Referencing connection strings from config files
 
-The connection-string portion can be a raw ADO.NET string *or* a reference to an existing config file so the LLM does not need the secret baked into the MCP config:
-
-| Form | Meaning |
-|------|---------|
-| `xml:<path>#<name>` | `.NET Framework` shorthand — `/configuration/connectionStrings/add[@name='<name>']/@connectionString` |
-| `xml:<path>#<xpath>` | Full XPath starting with `/` or `//`. Returns attribute value or element text. |
-| `json:<path>#<name>` | `.NET Core` shorthand — `$.ConnectionStrings.<name>` |
-| `json:<path>#$.a.b.c` | Dotted JSON path. |
-
-Examples:
+The connection-string portion can be a raw ADO.NET string *or* a reference to an existing config file so the LLM does not need the secret baked into the MCP config.
 
 ```json
 "args": [
@@ -338,6 +418,16 @@ Examples:
     "--db", "custom=psql:json:./secrets.json#$.Databases.Primary.ConnStr"
 ]
 ```
+
+<details>
+<summary>Reference forms and path placeholders</summary>
+
+| Form | Meaning |
+|------|---------|
+| `xml:<path>#<name>` | `.NET Framework` shorthand — `/configuration/connectionStrings/add[@name='<name>']/@connectionString` |
+| `xml:<path>#<xpath>` | Full XPath starting with `/` or `//`. Returns attribute value or element text. |
+| `json:<path>#<name>` | `.NET Core` shorthand — `$.ConnectionStrings.<name>` |
+| `json:<path>#$.a.b.c` | Dotted JSON path. |
 
 The delimiter between path and query is always `#`. Paths support the following placeholders so config-file references stay portable across machines / CI / committed `.mcp.json`:
 
@@ -358,9 +448,16 @@ Example committed to Git:
 
 Plain relative paths (no placeholder) resolve in this order: CWD → solutionRoot → gitRoot. First existing file wins. This lets a committed `.mcp.json` work on any contributor's machine regardless of where Claude was launched, without requiring a placeholder.
 
+</details>
+
 #### Auto-discovery from project config files
 
-At startup the server scans the working directory tree for `web.config`, `app.config`, and `appsettings*.json` files and registers any connection strings it finds. The alias is `ProjectName_ConnectionStringName` (project name comes from the nearest `*.csproj` walking up; non-alphanumerics are replaced with `_`). Aliases registered via explicit `--db` flags always win over auto-discovered ones with the same name.
+At startup the server scans the working directory tree for `web.config`, `app.config`, and `appsettings*.json` files and registers any connection strings it finds. The alias is `ProjectName_ConnectionStringName` (project name comes from the nearest `*.csproj` walking up; non-alphanumerics are replaced with `_`). Explicit `--db` flags and `roslynsense.json` `connections` always win over auto-discovered aliases with the same name.
+
+Disable the scan entirely with `--no-auto-db` (or `database.autoDiscovery: false` in `roslynsense.json`), or disable the database tools altogether with `--no-db`.
+
+<details>
+<summary>Development-first merge order and skipped files</summary>
 
 **Development-first by design.** RoslynSense is a development-time tool, so giving an LLM easy access to a production database is the wrong default. The merge order is:
 
@@ -368,7 +465,7 @@ At startup the server scans the working directory tree for `web.config`, `app.co
 2. Other environment-specific files — override the base.
 3. Development-flavored files (`appsettings.Development.json`, `appsettings.Local.json`, `web.Debug.config`, `app.Debug.config`) — applied last, overriding everything else.
 
-Production-flavored env names are **not loaded at all**: `Production`, `Prod`, `Live`, `Staging`, `Stage`, `Release`, `Publish`. (`Release` is the MSBuild configuration name applied by `dotnet publish -c Release`, almost always to inject prod settings — same risk as `Production`.) If you really need to register prod credentials, do it explicitly with `--db`.
+Production-flavored env names are **not loaded at all**: `Production`, `Prod`, `Live`, `Staging`, `Stage`, `Release`, `Publish`. (`Release` is the MSBuild configuration name applied by `dotnet publish -c Release`, almost always to inject prod settings — same risk as `Production`.) If you really need to register prod credentials, do it explicitly with `--db` or `roslynsense.json`.
 
 `web.<env>.config` / `app.<env>.config` are XDT transform files but commonly carry the only real local-dev connection string, so they are parsed alongside the base. The `xdt:` namespace is ignored on attribute reads; `xdt:Transform="Remove"` / `RemoveAll` on either an `<add>` entry or the `<connectionStrings>` section is honored.
 
@@ -380,6 +477,13 @@ Files and entries that are **skipped** with a stderr warning:
 - `<add xdt:Transform="Remove"/>` and `<connectionStrings xdt:Transform="RemoveAll"/>` inside transform files.
 - Empty values and unfilled placeholders: `${VAR}`, `$(VAR)`, `{{VAR}}`, `#{VAR}`, `%VAR%`, `<your connection string>`.
 
+`bin`, `obj`, `node_modules`, `.git`, `.vs`, `.idea`, `packages`, `TestResults`, and other dotted directories are skipped.
+
+</details>
+
+<details>
+<summary>Provider resolution order</summary>
+
 The provider for each connection string is resolved in this order — first match wins:
 
 1. `providerName` attribute on `<add>` (web.config) — e.g. `System.Data.SqlClient`, `Npgsql`, `System.Data.SQLite`.
@@ -389,7 +493,7 @@ The provider for each connection string is resolved in this order — first matc
 5. `web.config` default — `mssql`. (.NET Framework ships SqlClient in the BCL, so historically untyped `<connectionStrings>` entries meant SQL Server.)
 6. Otherwise the entry is skipped and a warning is logged on stderr.
 
-`bin`, `obj`, `node_modules`, `.git`, `.vs`, `.idea`, `packages`, `TestResults`, and other dotted directories are skipped. Disable the scan entirely with `--no-auto-db`, or disable the database tools altogether with `--no-db`.
+</details>
 
 ## Resources
 
