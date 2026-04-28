@@ -26,6 +26,16 @@ public static class AutoConnectionStringDiscovery
         "bin", "obj", "node_modules", ".git", ".vs", ".idea", "packages", "TestResults", ".cache"
     };
 
+    // Filename infixes that mark a config file as a non-runtime template / sample.
+    // Matches both `appsettings.template.json` and `web.template.config`.
+    private static readonly HashSet<string> s_templateInfixes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "template", "example", "sample", "dist"
+    };
+
+    // Cap recursion to guard against symlink loops and unbounded scans.
+    private const int MaxDirectoryDepth = 32;
+
     public sealed record DiscoveryWarning(string File, string Message);
 
     private sealed record ProjectContext(string Name, string? PackageProvider);
@@ -68,6 +78,13 @@ public static class AutoConnectionStringDiscovery
 
             foreach (var entry in entries)
             {
+                if (IsPlaceholderValue(entry.ConnectionString))
+                {
+                    warningList.Add(new DiscoveryWarning(
+                        file, $"connection '{entry.Name}' has an empty or placeholder value"));
+                    continue;
+                }
+
                 var providerToken = ResolveProvider(entry, ctx, isWebConfig);
                 if (providerToken is null)
                 {
@@ -96,11 +113,11 @@ public static class AutoConnectionStringDiscovery
 
     private static IEnumerable<string> EnumerateConfigFiles(string root)
     {
-        var stack = new Stack<string>();
-        stack.Push(root);
+        var stack = new Stack<(string Dir, int Depth)>();
+        stack.Push((root, 0));
         while (stack.Count > 0)
         {
-            var dir = stack.Pop();
+            var (dir, depth) = stack.Pop();
 
             string[] files;
             try { files = Directory.GetFiles(dir); }
@@ -108,13 +125,11 @@ public static class AutoConnectionStringDiscovery
 
             foreach (var f in files)
             {
-                var name = Path.GetFileName(f);
-                if (name.Equals("web.config", StringComparison.OrdinalIgnoreCase))
-                    yield return f;
-                else if (name.StartsWith("appsettings", StringComparison.OrdinalIgnoreCase) &&
-                         name.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+                if (IsConfigFile(Path.GetFileName(f)))
                     yield return f;
             }
+
+            if (depth >= MaxDirectoryDepth) continue;
 
             string[] subdirs;
             try { subdirs = Directory.GetDirectories(dir); }
@@ -125,9 +140,32 @@ public static class AutoConnectionStringDiscovery
                 var subName = Path.GetFileName(sub);
                 if (s_skipDirs.Contains(subName)) continue;
                 if (subName.Length > 0 && subName[0] == '.') continue;
-                stack.Push(sub);
+                stack.Push((sub, depth + 1));
             }
         }
+    }
+
+    internal static bool IsConfigFile(string fileName)
+    {
+        // Exact-match runtime configs (.NET Framework / desktop / console).
+        if (fileName.Equals("web.config", StringComparison.OrdinalIgnoreCase) ||
+            fileName.Equals("app.config", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        // .NET Core / 5+ runtime configs: `appsettings.json` or `appsettings.<env>.json`.
+        if (fileName.StartsWith("appsettings", StringComparison.OrdinalIgnoreCase) &&
+            fileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+        {
+            const int prefixLen = 11;  // "appsettings"
+            const int suffixLen = 5;   // ".json"
+            var middleLen = fileName.Length - prefixLen - suffixLen;
+            if (middleLen == 0) return true; // appsettings.json
+            if (fileName[prefixLen] != '.') return false;
+            var env = fileName.Substring(prefixLen + 1, middleLen - 1);
+            return !s_templateInfixes.Contains(env);
+        }
+
+        return false;
     }
 
     private static ProjectContext ResolveProjectContext(
@@ -210,6 +248,15 @@ public static class AutoConnectionStringDiscovery
     {
         var doc = new XmlDocument();
         doc.Load(path);
+
+        // Skip encrypted sections — `aspnet_regiis -pe` rewrites the element with a
+        // `configProtectionProvider` attribute and ciphertext children. We can't
+        // decrypt at runtime and the ciphertext is useless as a connection string.
+        var section = doc.SelectSingleNode("/configuration/connectionStrings");
+        if (section?.Attributes?["configProtectionProvider"] is not null)
+            throw new InvalidOperationException(
+                "<connectionStrings> is encrypted (configProtectionProvider set); skipping.");
+
         var nodes = doc.SelectNodes("/configuration/connectionStrings/add");
         var list = new List<RawEntry>();
         if (nodes is null) return list;
@@ -219,8 +266,8 @@ public static class AutoConnectionStringDiscovery
             var name = node.Attributes?["name"]?.Value;
             var connStr = node.Attributes?["connectionString"]?.Value;
             var providerName = node.Attributes?["providerName"]?.Value;
-            if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(connStr)) continue;
-            list.Add(new RawEntry(name, connStr, providerName));
+            if (string.IsNullOrEmpty(name)) continue;
+            list.Add(new RawEntry(name, connStr ?? string.Empty, providerName));
         }
         return list;
     }
@@ -243,8 +290,7 @@ public static class AutoConnectionStringDiscovery
         {
             if (prop.Value.ValueKind != JsonValueKind.String) continue;
             var connStr = prop.Value.GetString();
-            if (string.IsNullOrWhiteSpace(connStr)) continue;
-            list.Add(new RawEntry(prop.Name, connStr!, null));
+            list.Add(new RawEntry(prop.Name, connStr ?? string.Empty, null));
         }
         return list;
     }
@@ -306,6 +352,27 @@ public static class AutoConnectionStringDiscovery
             return "mssql";
 
         return null;
+    }
+
+    internal static bool IsPlaceholderValue(string? connStr)
+    {
+        if (string.IsNullOrWhiteSpace(connStr)) return true;
+        var trimmed = connStr.Trim();
+        // Common templating syntaxes left unfilled in committed configs:
+        //   ${VAR}, $(VAR), {{VAR}}, #{VAR}, %VAR%
+        if (trimmed.Contains("${") || trimmed.Contains("$(") ||
+            trimmed.Contains("{{") || trimmed.Contains("#{"))
+            return true;
+        // Bare angle-bracket placeholder like `<your connection string>` —
+        // distinguishable from a real connection string (real ones have `=`).
+        if (trimmed.StartsWith('<') && trimmed.EndsWith('>') && !trimmed.Contains('='))
+            return true;
+        // %VAR% placeholders — only treat as placeholder when the entire trimmed
+        // value is `%...%` (avoid false positives on URL-encoded chars).
+        if (trimmed.Length >= 3 && trimmed[0] == '%' && trimmed[^1] == '%' &&
+            trimmed.IndexOf('%', 1) == trimmed.Length - 1)
+            return true;
+        return false;
     }
 
     internal static string? GuessProviderFromName(string name)

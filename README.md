@@ -360,7 +360,14 @@ Plain relative paths (no placeholder) resolve in this order: CWD → solutionRoo
 
 #### Auto-discovery from project config files
 
-At startup the server scans the working directory tree for `web.config` and `appsettings*.json` files and registers any connection strings it finds. The alias is `ProjectName_ConnectionStringName` (project name comes from the nearest `*.csproj` walking up; non-alphanumerics are replaced with `_`). Environment-specific files like `appsettings.Development.json` override the base file. Aliases registered via explicit `--db` flags always win over auto-discovered ones with the same name.
+At startup the server scans the working directory tree for `web.config`, `app.config`, and `appsettings*.json` files and registers any connection strings it finds. The alias is `ProjectName_ConnectionStringName` (project name comes from the nearest `*.csproj` walking up; non-alphanumerics are replaced with `_`). Environment-specific files like `appsettings.Development.json` override the base file. Aliases registered via explicit `--db` flags always win over auto-discovered ones with the same name.
+
+Files and entries that are **skipped** with a stderr warning:
+
+- `appsettings.template.json`, `appsettings.example.json`, `appsettings.sample.json`, `appsettings.dist.json` — non-runtime templates committed without secrets.
+- `web.<env>.config` / `app.<env>.config` (e.g. `web.Debug.config`, `web.Release.config`) — XDT transform fragments, not standalone configs.
+- `<connectionStrings configProtectionProvider="…">` — encrypted via `aspnet_regiis -pe`; the ciphertext is unusable at runtime.
+- Empty values and unfilled placeholders: `${VAR}`, `$(VAR)`, `{{VAR}}`, `#{VAR}`, `%VAR%`, `<your connection string>`.
 
 The provider for each connection string is resolved in this order — first match wins:
 

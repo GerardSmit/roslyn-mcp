@@ -1,3 +1,4 @@
+using System.Text.Json;
 using RoslynMCP.Services.Database;
 using Xunit;
 
@@ -149,6 +150,144 @@ public class AutoConnectionStringDiscoveryTests : IDisposable
         Assert.Empty(providers);
         Assert.Single(warnings);
         Assert.Contains("parse failed", warnings[0].Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void EncryptedConnectionStringsSectionIsSkipped()
+    {
+        var dir = MakeProject("Legacy");
+        // Output of `aspnet_regiis -pe "connectionStrings"` — element is replaced
+        // with EncryptedData and a configProtectionProvider attribute.
+        File.WriteAllText(Path.Combine(dir, "web.config"), """
+        <?xml version="1.0"?>
+        <configuration>
+            <connectionStrings configProtectionProvider="RsaProtectedConfigurationProvider">
+                <EncryptedData><CipherData><CipherValue>opaque</CipherValue></CipherData></EncryptedData>
+            </connectionStrings>
+        </configuration>
+        """);
+
+        var providers = AutoConnectionStringDiscovery.Discover(_root, out var warnings);
+        Assert.Empty(providers);
+        Assert.Single(warnings);
+        Assert.Contains("encrypted", warnings[0].Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void DiscoversAppConfigConnectionStrings()
+    {
+        var dir = MakeProject("ConsoleApp");
+        File.WriteAllText(Path.Combine(dir, "app.config"), """
+        <?xml version="1.0"?>
+        <configuration>
+            <connectionStrings>
+                <add name="Main" connectionString="Server=(local);Database=Foo;Integrated Security=true" providerName="System.Data.SqlClient" />
+            </connectionStrings>
+        </configuration>
+        """);
+
+        var providers = AutoConnectionStringDiscovery.Discover(_root);
+        var p = Assert.Single(providers);
+        Assert.Equal("ConsoleApp_Main", p.Alias);
+        Assert.Equal("mssql", p.ProviderName);
+    }
+
+    [Theory]
+    [InlineData("appsettings.template.json")]
+    [InlineData("appsettings.example.json")]
+    [InlineData("appsettings.sample.json")]
+    [InlineData("appsettings.dist.json")]
+    [InlineData("web.template.config")]
+    [InlineData("web.Debug.config")]
+    [InlineData("web.Release.config")]
+    [InlineData("app.Debug.config")]
+    public void TemplateAndTransformFilesAreSkipped(string fileName)
+    {
+        var dir = MakeProject("App");
+        var content = fileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase)
+            ? """{"ConnectionStrings":{"Main":"Server=db;Database=foo;Integrated Security=true"}}"""
+            : """
+              <?xml version="1.0"?>
+              <configuration>
+                  <connectionStrings>
+                      <add name="Main" connectionString="Server=db;Database=foo;Integrated Security=true" providerName="System.Data.SqlClient" />
+                  </connectionStrings>
+              </configuration>
+              """;
+        File.WriteAllText(Path.Combine(dir, fileName), content);
+
+        var providers = AutoConnectionStringDiscovery.Discover(_root);
+        Assert.Empty(providers);
+    }
+
+    [Fact]
+    public void AppSettingsBaseFileIsStillRecognized()
+    {
+        var dir = MakeProject("App");
+        File.WriteAllText(Path.Combine(dir, "appsettings.Development.json"),
+            """{"ConnectionStrings":{"Main":"Server=db;Database=foo;Integrated Security=true"}}""");
+
+        var providers = AutoConnectionStringDiscovery.Discover(_root);
+        Assert.Single(providers);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("${CONN_STRING}")]
+    [InlineData("Server=${DB_HOST};Database=foo")]
+    [InlineData("$(ConnectionString)")]
+    [InlineData("{{CONN}}")]
+    [InlineData("#{Production.Db}")]
+    [InlineData("<your connection string here>")]
+    [InlineData("%CONN%")]
+    public void PlaceholderValuesAreSkipped(string value)
+    {
+        var dir = MakeProject("App");
+        var json = JsonSerializer.Serialize(new { ConnectionStrings = new Dictionary<string, string> { ["X"] = value } });
+        File.WriteAllText(Path.Combine(dir, "appsettings.json"), json);
+
+        var providers = AutoConnectionStringDiscovery.Discover(_root, out var warnings);
+        Assert.Empty(providers);
+        Assert.Single(warnings);
+        Assert.Contains("placeholder", warnings[0].Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("web.config", true)]
+    [InlineData("Web.Config", true)]
+    [InlineData("app.config", true)]
+    [InlineData("App.config", true)]
+    [InlineData("web.Debug.config", false)]
+    [InlineData("web.template.config", false)]
+    [InlineData("appsettings.json", true)]
+    [InlineData("appsettings.Development.json", true)]
+    [InlineData("appsettings.template.json", false)]
+    [InlineData("appsettings.example.json", false)]
+    [InlineData("appsettings.sample.json", false)]
+    [InlineData("appsettings.dist.json", false)]
+    [InlineData("appsettingsfoo.json", false)]
+    [InlineData("settings.json", false)]
+    public void IsConfigFileMatchesExpected(string name, bool expected)
+    {
+        Assert.Equal(expected, AutoConnectionStringDiscovery.IsConfigFile(name));
+    }
+
+    [Theory]
+    [InlineData("Server=db;Database=foo;Integrated Security=true", false)]
+    [InlineData("", true)]
+    [InlineData("   ", true)]
+    [InlineData("${CONN}", true)]
+    [InlineData("Server=${HOST}", true)]
+    [InlineData("$(Conn)", true)]
+    [InlineData("{{x}}", true)]
+    [InlineData("#{x}", true)]
+    [InlineData("<your connection string>", true)]
+    [InlineData("%CONN%", true)]
+    [InlineData("Server=foo%20bar;Database=baz", false)]
+    public void IsPlaceholderValueRecognizesEmptyAndTemplated(string value, bool expected)
+    {
+        Assert.Equal(expected, AutoConnectionStringDiscovery.IsPlaceholderValue(value));
     }
 
     [Theory]
