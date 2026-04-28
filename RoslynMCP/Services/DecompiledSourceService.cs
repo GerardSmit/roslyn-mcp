@@ -2,8 +2,11 @@ using System.Collections.Immutable;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Reflection.PortableExecutable;
+using MetadataReaderOptions = System.Reflection.Metadata.MetadataReaderOptions;
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
+using ICSharpCode.Decompiler.Metadata;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
@@ -69,7 +72,18 @@ internal static class DecompiledSourceService
 
         Directory.CreateDirectory(outputDirectory);
 
-        string sourceText = DecompileType(assemblyPath, reflectionTypeName, cancellationToken);
+        string? sourceText;
+        try
+        {
+            sourceText = DecompileType(assemblyPath, reflectionTypeName, cancellationToken);
+        }
+        catch (ResolutionException ex)
+        {
+            Console.Error.WriteLine(
+                $"[DecompiledSourceService] Decompilation skipped for '{reflectionTypeName}' in '{assemblyPath}': {ex.Message}");
+            return null;
+        }
+
         WriteFileIfChanged(sourceFilePath, sourceText);
 
         var manifest = new DecompiledSourceManifest
@@ -164,12 +178,45 @@ internal static class DecompiledSourceService
         string reflectionTypeName,
         CancellationToken cancellationToken)
     {
-        var decompiler = new CSharpDecompiler(assemblyPath, new DecompilerSettings())
+        var resolver = CreateLenientResolver(assemblyPath);
+        var decompiler = new CSharpDecompiler(assemblyPath, resolver, new DecompilerSettings())
         {
             CancellationToken = cancellationToken
         };
 
         return decompiler.DecompileTypeAsString(new DecompilerFullTypeName(reflectionTypeName));
+    }
+
+    private static UniversalAssemblyResolver CreateLenientResolver(string assemblyPath)
+    {
+        string? targetFramework = null;
+        string? runtimePack = null;
+
+        try
+        {
+            using var stream = new FileStream(assemblyPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var peFile = new PEFile(
+                assemblyPath,
+                stream,
+                PEStreamOptions.PrefetchMetadata,
+                MetadataReaderOptions.None);
+
+            targetFramework = peFile.DetectTargetFrameworkId();
+            runtimePack = peFile.DetectRuntimePack();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"[DecompiledSourceService] Failed to detect target framework for '{assemblyPath}': {ex.Message}");
+        }
+
+        return new UniversalAssemblyResolver(
+            assemblyPath,
+            throwOnError: false,
+            targetFramework,
+            runtimePack,
+            PEStreamOptions.PrefetchMetadata,
+            MetadataReaderOptions.None);
     }
 
     private static async Task<string?> ResolveAssemblyPathAsync(
