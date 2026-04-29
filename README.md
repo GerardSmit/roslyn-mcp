@@ -180,6 +180,7 @@ Use the following server configuration:
 | `--db <alias>=<provider>:<connstr>` | Register a database connection. Repeatable. Providers: `psql`, `mssql`, `sqlite`. See [Databases](#databases). |
 | `--no-db` | Disable all database tools. |
 | `--no-auto-db` | Disable auto-discovery of connection strings from `web.config` and `appsettings*.json`. See [Databases](#databases). |
+| `--no-preload` | Disable background workspace preloading on startup. |
 
 Example with Razor disabled:
 
@@ -218,7 +219,8 @@ Drop a `roslynsense.json` next to your solution (or anywhere up the tree from wh
             }
         }
     },
-    "tableFormat": "toon"
+    "tableFormat": "toon",
+    "preload": ["./MySolution.sln"]
 }
 ```
 
@@ -237,6 +239,13 @@ Drop a `roslynsense.json` next to your solution (or anywhere up the tree from wh
 | `database.autoDiscovery` | bool? | `null` | `--no-auto-db` forces `false` |
 | `database.connections` | object | `{}` | `--db` overrides matching alias |
 | `tableFormat` | string? | `null` | `--toon` forces `"toon"` |
+| `preload` | string[]? | `null` | `--no-preload` forces `[]` |
+
+**`preload` semantics:**
+
+- `null` (default) — auto-discovers the first `.sln`/`.slnx` in the working directory and preloads all its projects in the background on startup.
+- `["path1.sln", "path2.csproj"]` — preloads exactly the listed solution and/or project files.
+- `[]` — disables preloading entirely.
 
 **`autoDiscovery` semantics:**
 
@@ -337,6 +346,7 @@ The connection-string portion accepts the same `xml:` / `json:` indirection and 
 | **FindTests** | Find test methods that reference a symbol. Optionally uses coverage data for runtime-accurate results. |
 | **RunCoverage** | Collect code coverage for a test project using coverlet. Caches results for querying. Set `background: true` for background collection. |
 | **GetCoverage** | Query coverage by project, file, class, or method. Shows line and branch coverage with uncovered lines. |
+| **GetMethodCoverage** | Get per-line coverage detail for a specific method. Shows every executable line with hit count and source code. Lines marked with `!` have partial branch coverage. |
 
 ### Debugging
 

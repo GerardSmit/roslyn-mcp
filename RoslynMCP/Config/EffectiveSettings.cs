@@ -69,10 +69,12 @@ public sealed record EffectiveSettings(
             }
         }
 
+        IReadOnlyList<string>? preload = HasFlag("--no-preload") ? [] : config?.Preload;
+
         return new EffectiveSettings(
             webForms, razor, debugger, profiling, database,
             autoDiscover, tableFormat, explicitProviders,
-            config?.Preload);
+            preload);
     }
 
     public bool ShouldRunAutoDiscovery()
