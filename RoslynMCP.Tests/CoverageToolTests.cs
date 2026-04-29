@@ -443,8 +443,9 @@ public class CoverageToolTests
         var runResult = await CoverageService.RunCoverageAsync(FixturePaths.DebugTestProjectFile);
         Assert.True(runResult.Success, $"Coverage collection failed: {runResult.Message}");
 
+        // filePath narrows to Calculator.cs specifically — "CalculatorTests.cs" does not contain "Calculator.cs"
         var result = await GetMethodCoverageTool.GetMethodCoverage(
-            new MarkdownFormatter(), methodName: "Add", className: "Calculator");
+            new MarkdownFormatter(), methodName: "Add", className: "Calculator", filePath: "Calculator.cs");
 
         Assert.DoesNotContain("File modified since coverage was collected", result);
     }
@@ -536,8 +537,9 @@ public class CoverageToolTests
         var runResult = await CoverageService.RunCoverageAsync(FixturePaths.DebugTestProjectFile);
         Assert.True(runResult.Success, $"Coverage collection failed: {runResult.Message}");
 
+        // filePath narrows to Calculator.cs specifically — "CalculatorTests.cs" does not contain "Calculator.cs"
         var result = await GetMethodCoverageTool.GetMethodCoverage(
-            new MarkdownFormatter(), methodName: "Add", className: "Calculator");
+            new MarkdownFormatter(), methodName: "Add", className: "Calculator", filePath: "Calculator.cs");
 
         Assert.DoesNotContain("Method source has changed", result);
     }

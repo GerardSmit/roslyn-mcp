@@ -62,8 +62,12 @@ public static class GetMethodCoverageTool
                 bool methodChanged = false;
                 if (!string.IsNullOrEmpty(method.SourceHash) && sourceLines.Length > 0 && method.Lines.Count > 0)
                 {
-                    int hashMinLine = method.Lines.Min(l => l.LineNumber) + offset;
-                    int hashMaxLine = method.Lines.Max(l => l.LineNumber) + offset;
+                    // Use raw coverage line numbers (no offset) — ComputeSourceHashes stored the
+                    // hash against these same lines. Offset only applies to display; applying it
+                    // here shifts the window when Coverlet and Roslyn disagree on the first line,
+                    // producing false "method changed" warnings on unmodified files.
+                    int hashMinLine = method.Lines.Min(l => l.LineNumber);
+                    int hashMaxLine = method.Lines.Max(l => l.LineNumber);
                     int rangeStart = Math.Max(0, hashMinLine - 1);
                     int rangeEnd = Math.Min(sourceLines.Length - 1, hashMaxLine - 1);
 
