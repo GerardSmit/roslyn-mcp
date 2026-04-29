@@ -53,19 +53,17 @@ public static class GetMethodCoverageTool
 
             foreach (var method in methods)
             {
-                int offset = await ComputeLineOffsetAsync(method, cancellationToken);
-
                 string[] sourceLines = File.Exists(method.FilePath)
                     ? File.ReadAllLines(method.FilePath)
                     : [];
 
                 bool methodChanged = false;
+                bool hashUnchanged = false;
                 if (!string.IsNullOrEmpty(method.SourceHash) && sourceLines.Length > 0 && method.Lines.Count > 0)
                 {
                     // Use raw coverage line numbers (no offset) — ComputeSourceHashes stored the
-                    // hash against these same lines. Offset only applies to display; applying it
-                    // here shifts the window when Coverlet and Roslyn disagree on the first line,
-                    // producing false "method changed" warnings on unmodified files.
+                    // hash against these same lines. If raw-line hash matches, content at method
+                    // is unchanged regardless of any Coverlet/Roslyn first-line disagreement.
                     int hashMinLine = method.Lines.Min(l => l.LineNumber);
                     int hashMaxLine = method.Lines.Max(l => l.LineNumber);
                     int rangeStart = Math.Max(0, hashMinLine - 1);
@@ -78,14 +76,20 @@ public static class GetMethodCoverageTool
                     byte[] hashBuf = ArrayPool<byte>.Shared.Rent(maxBytes);
                     try
                     {
-                        methodChanged = CoverageService.HashMethodLines(sourceLines, hashMinLine, hashMaxLine, hashBuf)
-                            != method.SourceHash;
+                        bool match = CoverageService.HashMethodLines(sourceLines, hashMinLine, hashMaxLine, hashBuf)
+                            == method.SourceHash;
+                        hashUnchanged = match;
+                        methodChanged = !match;
                     }
                     finally
                     {
                         ArrayPool<byte>.Shared.Return(hashBuf);
                     }
                 }
+
+                // Only compute Roslyn offset when raw-line hash mismatches — otherwise Coverlet's
+                // recorded line is authoritative and any Roslyn disagreement is harmless noise.
+                int offset = hashUnchanged ? 0 : await ComputeLineOffsetAsync(method, cancellationToken);
 
                 fmt.AppendHeader(sb, method.FullName, 2);
                 fmt.AppendField(sb, "File", Path.GetFileName(method.FilePath));
