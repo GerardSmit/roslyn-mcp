@@ -11,14 +11,14 @@ public class CoverageToolTests
     [Fact]
     public async Task WhenRunCoverageWithEmptyPathThenReturnsError()
     {
-        var result = await RunCoverageTool.RunCoverage("", new BackgroundTaskStore(), new BuildWarningsStore());
+        var result = await RunCoverageTool.RunCoverage("", new MarkdownFormatter(), new BackgroundTaskStore(), new BuildWarningsStore());
         Assert.Contains("Error", result);
     }
 
     [Fact]
     public async Task WhenRunCoverageWithNonexistentPathThenReturnsError()
     {
-        var result = await RunCoverageTool.RunCoverage("/nonexistent/path/Test.csproj", new BackgroundTaskStore(), new BuildWarningsStore());
+        var result = await RunCoverageTool.RunCoverage("/nonexistent/path/Test.csproj", new MarkdownFormatter(), new BackgroundTaskStore(), new BuildWarningsStore());
         Assert.Contains("Error", result);
     }
 
@@ -279,7 +279,7 @@ public class CoverageToolTests
     public async Task WhenGetCoverageToolUsedAfterRunCoverageThenReturnsFormattedOutput()
     {
         // Run coverage via the tool
-        var runResult = await RunCoverageTool.RunCoverage(FixturePaths.DebugTestProjectFile, new BackgroundTaskStore(), new BuildWarningsStore());
+        var runResult = await RunCoverageTool.RunCoverage(FixturePaths.DebugTestProjectFile, new MarkdownFormatter(), new BackgroundTaskStore(), new BuildWarningsStore());
         Assert.Contains("Coverage Report", runResult);
 
         // Query via the tool
@@ -307,4 +307,337 @@ public class CoverageToolTests
         Assert.Contains("Coverage by Type", result);
         Assert.Contains("Calculator", result);
     }
+
+    // --- GetMethodCoverage error handling ---
+
+    [Fact]
+    public async Task WhenGetMethodCoverageWithNoCacheThenReturnsError()
+    {
+        ClearCoverageCache();
+
+        var result = await GetMethodCoverageTool.GetMethodCoverage(
+            new MarkdownFormatter(), methodName: "SomeMethod");
+
+        Assert.Contains("RunCoverage", result);
+    }
+
+    [Fact]
+    public async Task WhenGetMethodCoverageWithNonexistentMethodThenReturnsNotFound()
+    {
+        InjectCoverageXml(MinimalCoverageXml());
+
+        try
+        {
+            var result = await GetMethodCoverageTool.GetMethodCoverage(
+                new MarkdownFormatter(), methodName: "CompletelyNonexistentMethodXYZ99");
+
+            Assert.Contains("No coverage data found", result);
+        }
+        finally
+        {
+            ClearCoverageCache();
+        }
+    }
+
+    // --- GetMethodCoverage unit tests (all lines shown) ---
+
+    [Fact]
+    public async Task WhenGetMethodCoverageForFullyCoveredMethodThenShowsCoveredLines()
+    {
+        InjectCoverageXml(MinimalCoverageXml());
+
+        try
+        {
+            var result = await GetMethodCoverageTool.GetMethodCoverage(
+                new MarkdownFormatter(), methodName: "Add");
+
+            Assert.Contains("Add", result);
+            Assert.Contains("hits", result);
+            Assert.DoesNotContain("0 hits", result); // all lines covered
+        }
+        finally
+        {
+            ClearCoverageCache();
+        }
+    }
+
+    [Fact]
+    public async Task WhenGetMethodCoverageForPartiallyCoveredMethodThenShowsAllLines()
+    {
+        InjectCoverageXml(MinimalCoverageXml());
+
+        try
+        {
+            var result = await GetMethodCoverageTool.GetMethodCoverage(
+                new MarkdownFormatter(), methodName: "Divide");
+
+            Assert.Contains("Divide", result);
+            Assert.Contains("0 hits", result);   // uncovered lines
+            Assert.Contains("2 hits", result);   // covered lines
+            Assert.Contains("hits !", result);   // partial branch marker
+        }
+        finally
+        {
+            ClearCoverageCache();
+        }
+    }
+
+    [Fact]
+    public async Task WhenGetMethodCoverageWithClassNameFilterThenNarrowsResults()
+    {
+        InjectCoverageXml(MinimalCoverageXml());
+
+        try
+        {
+            // Filter to a non-matching class — should return not-found
+            var result = await GetMethodCoverageTool.GetMethodCoverage(
+                new MarkdownFormatter(), methodName: "Add", className: "NonexistentClass");
+
+            Assert.Contains("No coverage data found", result);
+        }
+        finally
+        {
+            ClearCoverageCache();
+        }
+    }
+
+    [Fact]
+    public async Task WhenGetMethodCoverageWithFilePathFilterThenNarrowsResults()
+    {
+        InjectCoverageXml(MinimalCoverageXml());
+
+        try
+        {
+            // Filter to a non-matching file — should return not-found
+            var result = await GetMethodCoverageTool.GetMethodCoverage(
+                new MarkdownFormatter(), methodName: "Add", filePath: "NonexistentFile.cs");
+
+            Assert.Contains("No coverage data found", result);
+        }
+        finally
+        {
+            ClearCoverageCache();
+        }
+    }
+
+    // --- GetMethodCoverage integration test ---
+
+    [Fact]
+    public async Task WhenGetMethodCoverageAfterRunThenShowsPerLineCoverage()
+    {
+        var runResult = await CoverageService.RunCoverageAsync(FixturePaths.DebugTestProjectFile);
+        Assert.True(runResult.Success, $"Coverage collection failed: {runResult.Message}");
+
+        var result = await GetMethodCoverageTool.GetMethodCoverage(
+            new MarkdownFormatter(), methodName: "Add");
+
+        Assert.DoesNotContain("RunCoverage", result);
+        Assert.DoesNotContain("No coverage data found", result);
+        Assert.Contains("Add", result);
+        Assert.Contains("hits", result);
+    }
+
+    [Fact]
+    public async Task WhenGetMethodCoverageAndFileUnchangedThenNoStalenessWarning()
+    {
+        var runResult = await CoverageService.RunCoverageAsync(FixturePaths.DebugTestProjectFile);
+        Assert.True(runResult.Success, $"Coverage collection failed: {runResult.Message}");
+
+        var result = await GetMethodCoverageTool.GetMethodCoverage(
+            new MarkdownFormatter(), methodName: "Add");
+
+        Assert.DoesNotContain("File modified since coverage was collected", result);
+    }
+
+    // --- SourceHash ---
+
+    [Fact]
+    public void WhenHashMethodLinesCalledThenReturnsDeterministicHash()
+    {
+        string[] lines = ["public int Add(int a, int b)", "{", "    return a + b;", "}"];
+        int maxBytes = lines.Max(l => System.Text.Encoding.UTF8.GetMaxByteCount(l.Length));
+        byte[] buf = System.Buffers.ArrayPool<byte>.Shared.Rent(maxBytes);
+        try
+        {
+            string h1 = CoverageService.HashMethodLines(lines, 1, 4, buf);
+            string h2 = CoverageService.HashMethodLines(lines, 1, 4, buf);
+            Assert.Equal(h1, h2);
+            Assert.NotEmpty(h1);
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(buf);
+        }
+    }
+
+    [Fact]
+    public void WhenHashMethodLinesCalledWithDifferentContentThenReturnsDifferentHash()
+    {
+        string[] lines1 = ["    return a + b;"];
+        string[] lines2 = ["    return a - b;"];
+        byte[] buf = System.Buffers.ArrayPool<byte>.Shared.Rent(64);
+        try
+        {
+            Assert.NotEqual(
+                CoverageService.HashMethodLines(lines1, 1, 1, buf),
+                CoverageService.HashMethodLines(lines2, 1, 1, buf));
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(buf);
+        }
+    }
+
+    [Fact]
+    public void WhenComputeSourceHashesCalledThenMethodHashesPopulated()
+    {
+        var tempFile = Path.Combine(Path.GetTempPath(), $"hash-test-{Guid.NewGuid():N}.cs");
+        File.WriteAllText(tempFile, """
+            public class Calc {
+                public int Add(int a, int b) {
+                    return a + b;
+                }
+            }
+            """);
+
+        try
+        {
+            string xml = $"""
+                <?xml version="1.0" encoding="utf-8"?>
+                <coverage line-rate="1.0" branch-rate="1.0" lines-covered="1" lines-valid="1" branches-covered="0" branches-valid="0">
+                  <packages><package name="P" line-rate="1.0" branch-rate="1.0">
+                    <classes><class name="Calc" filename="{tempFile.Replace("\\", "/")}" line-rate="1.0" branch-rate="1.0">
+                      <methods><method name="Add" signature="(int,int):int" line-rate="1.0" branch-rate="1.0">
+                        <lines><line number="3" hits="1" branch="false" /></lines>
+                      </method></methods>
+                      <lines><line number="3" hits="1" branch="false" /></lines>
+                    </class></classes>
+                  </package></packages>
+                </coverage>
+                """;
+            InjectCoverageXml(xml);
+
+            var methods = CoverageService.FindMethodCoverage("Add");
+            var method = methods.FirstOrDefault(m => m.FilePath.Equals(tempFile, StringComparison.OrdinalIgnoreCase));
+            Assert.NotNull(method);
+            Assert.NotNull(method!.SourceHash);
+            Assert.NotEmpty(method.SourceHash!);
+        }
+        finally
+        {
+            File.Delete(tempFile);
+            ClearCoverageCache();
+        }
+    }
+
+    [Fact]
+    public async Task WhenGetMethodCoverageAndFileUnchangedThenNoMethodChangedWarning()
+    {
+        var runResult = await CoverageService.RunCoverageAsync(FixturePaths.DebugTestProjectFile);
+        Assert.True(runResult.Success, $"Coverage collection failed: {runResult.Message}");
+
+        var result = await GetMethodCoverageTool.GetMethodCoverage(
+            new MarkdownFormatter(), methodName: "Add");
+
+        Assert.DoesNotContain("Method source has changed", result);
+    }
+
+    // --- RunCoverage next-step hints ---
+
+    [Fact]
+    public async Task WhenRunCoverageSucceedsThenOutputContainsNextStepHints()
+    {
+        var result = await RunCoverageTool.RunCoverage(
+            FixturePaths.DebugTestProjectFile, new MarkdownFormatter(),
+            new BackgroundTaskStore(), new BuildWarningsStore());
+
+        Assert.Contains("GetCoverage", result);
+        Assert.Contains("GetMethodCoverage", result);
+    }
+
+    [Fact]
+    public async Task WhenRunCoverageFailsThenOutputDoesNotContainNextStepHints()
+    {
+        var result = await RunCoverageTool.RunCoverage(
+            "/nonexistent/path/Test.csproj", new MarkdownFormatter(),
+            new BackgroundTaskStore(), new BuildWarningsStore());
+
+        Assert.DoesNotContain("GetMethodCoverage", result);
+    }
+
+    // --- Helpers ---
+
+    private static void ClearCoverageCache()
+    {
+        var dataField = typeof(CoverageService).GetField(
+            "_cachedData", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        dataField!.SetValue(null, null);
+    }
+
+    private static void InjectCoverageXml(string xml)
+    {
+        var tempFile = Path.Combine(Path.GetTempPath(), $"coverage-inject-{Guid.NewGuid():N}.xml");
+        File.WriteAllText(tempFile, xml);
+        try
+        {
+            var parseMethod = typeof(CoverageService).GetMethod(
+                "ParseCoberturaXml",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            var hashMethod = typeof(CoverageService).GetMethod(
+                "ComputeSourceHashes",
+                System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            var data = (CoverageData)parseMethod!.Invoke(null, [tempFile])!;
+            hashMethod!.Invoke(null, [data]);
+
+            var lockField = typeof(CoverageService).GetField(
+                "Lock", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+            var dataField = typeof(CoverageService).GetField(
+                "_cachedData", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+
+            lock (lockField!.GetValue(null)!)
+                dataField!.SetValue(null, data);
+        }
+        finally
+        {
+            File.Delete(tempFile);
+        }
+    }
+
+    private static string MinimalCoverageXml() => """
+        <?xml version="1.0" encoding="utf-8"?>
+        <coverage line-rate="0.75" branch-rate="0.50" lines-covered="3" lines-valid="4" branches-covered="1" branches-valid="2">
+          <packages>
+            <package name="TestProject" line-rate="0.75" branch-rate="0.50">
+              <classes>
+                <class name="Calculator" filename="Calculator.cs" line-rate="0.75" branch-rate="0.50">
+                  <methods>
+                    <method name="Add" signature="(int,int):int" line-rate="1.0" branch-rate="1.0">
+                      <lines>
+                        <line number="7" hits="3" branch="false" />
+                        <line number="8" hits="3" branch="false" />
+                      </lines>
+                    </method>
+                    <method name="Divide" signature="(int,int):int" line-rate="0.5" branch-rate="0.5">
+                      <lines>
+                        <line number="12" hits="2" branch="false" />
+                        <line number="13" hits="2" branch="true" condition-coverage="50% (1/2)" />
+                        <line number="14" hits="0" branch="false" />
+                        <line number="15" hits="0" branch="false" />
+                      </lines>
+                    </method>
+                  </methods>
+                  <lines>
+                    <line number="7" hits="3" branch="false" />
+                    <line number="8" hits="3" branch="false" />
+                    <line number="12" hits="2" branch="false" />
+                    <line number="13" hits="2" branch="true" condition-coverage="50% (1/2)" />
+                    <line number="14" hits="0" branch="false" />
+                    <line number="15" hits="0" branch="false" />
+                  </lines>
+                </class>
+              </classes>
+            </package>
+          </packages>
+        </coverage>
+        """;
 }

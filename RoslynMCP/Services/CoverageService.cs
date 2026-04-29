@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using System.Xml.Linq;
 using RoslynMCP.Tools;
@@ -125,6 +127,7 @@ public static class CoverageService
                 return new CoverageResult(false, "Coverage file not found. Ensure coverlet.collector is referenced in the test project.", null);
 
             var data = ParseCoberturaXml(coberturaFile);
+            ComputeSourceHashes(data);
 
             lock (Lock)
             {
@@ -262,6 +265,7 @@ public static class CoverageService
                     $"Coverage file not found. Ensure dotnet-coverage supports your .NET Framework version.\n{stdout}{stderr}", null);
 
             var data = ParseCoberturaXml(outputPath);
+            ComputeSourceHashes(data);
             lock (Lock)
             {
                 _cachedData = data;
@@ -418,6 +422,59 @@ public static class CoverageService
         if (_cachedData is null) return null;
         var normalized = Path.GetFullPath(filePath);
         return _cachedData.Files.GetValueOrDefault(normalized);
+    }
+
+    private static void ComputeSourceHashes(CoverageData data)
+    {
+        foreach (var file in data.Files.Values)
+        {
+            if (!File.Exists(file.FilePath)) continue;
+            string[] lines = File.ReadAllLines(file.FilePath);
+            if (lines.Length == 0) continue;
+
+            int maxBytes = 1;
+            foreach (var line in lines)
+                maxBytes = Math.Max(maxBytes, Encoding.UTF8.GetMaxByteCount(line.Length));
+
+            byte[] buf = ArrayPool<byte>.Shared.Rent(maxBytes);
+            try
+            {
+                foreach (var method in file.Methods)
+                {
+                    if (method.Lines.Count == 0) continue;
+                    int minLine = method.Lines.Min(l => l.LineNumber);
+                    int maxLine = method.Lines.Max(l => l.LineNumber);
+                    method.SourceHash = HashMethodLines(lines, minLine, maxLine, buf);
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buf);
+            }
+        }
+    }
+
+    internal static string HashMethodLines(string[] lines, int minLine, int maxLine, byte[] buf)
+    {
+        int start = Math.Max(0, minLine - 1);
+        int end = Math.Min(lines.Length - 1, maxLine - 1);
+        if (start > end) return "";
+
+        using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        ReadOnlySpan<byte> newline = "\n"u8;
+
+        for (int i = start; i <= end; i++)
+        {
+            ReadOnlySpan<char> trimmed = lines[i].AsSpan().Trim();
+            int written = Encoding.UTF8.GetBytes(trimmed, buf);
+            hasher.AppendData(buf.AsSpan(0, written));
+            if (i < end)
+                hasher.AppendData(newline);
+        }
+
+        Span<byte> hash = stackalloc byte[32];
+        hasher.GetHashAndReset(hash);
+        return Convert.ToHexString(hash);
     }
 
     private static CoverageData ParseCoberturaXml(string path)
@@ -677,6 +734,7 @@ public class MethodCoverage
     public int TotalBranches { get; set; }
     public int CoveredBranches { get; set; }
     public double BranchCoverageRate => TotalBranches > 0 ? (double)CoveredBranches / TotalBranches : 1.0;
+    public string? SourceHash { get; set; }
 }
 
 public class LineCoverage

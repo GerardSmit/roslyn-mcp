@@ -104,7 +104,7 @@ internal static class BackgroundTaskHelper
                $"**Task ID:** `{taskId}`\n\n" +
                $"You can continue working on other tasks. " +
                $"Check results later with `GetBackgroundTaskResult(\"{taskId}\")`.\n" +
-               $"Once complete, use `GetCoverage` to query the cached results.";
+               $"Once complete, use `GetCoverage` for project-wide overview, or `GetMethodCoverage(methodName: '...')` for per-line detail.";
     }
 
     /// <summary>Starts a MSBuild+VSTest run for a legacy .NET Framework project in the background.</summary>

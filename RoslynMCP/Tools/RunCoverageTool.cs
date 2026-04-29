@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Text;
 using ModelContextProtocol.Server;
 using RoslynMCP.Services;
 
@@ -14,6 +15,7 @@ public static class RunCoverageTool
     public static async Task<string> RunCoverage(
         [Description("Path to the test project (.csproj) or a source file in the test project.")]
         string projectPath,
+        IOutputFormatter fmt,
         BackgroundTaskStore taskStore,
         BuildWarningsStore warningsStore,
         [Description("Optional test filter expression (e.g. 'ClassName.MethodName', 'FullyQualifiedName~MyTest'). If empty, all tests are run.")]
@@ -45,7 +47,15 @@ public static class RunCoverageTool
             }
 
             var result = await CoverageService.RunCoverageAsync(systemPath, filter, timeoutSeconds, cancellationToken, warningsStore);
-            return result.Message;
+            if (!result.Success)
+                return result.Message;
+
+            var sb = new StringBuilder(result.Message);
+            fmt.AppendHints(sb,
+                "Use GetCoverage for project-wide overview",
+                "Use GetCoverage(methodName: '...') to see uncovered lines in a specific method",
+                "Use GetMethodCoverage(methodName: '...') for per-line hit counts and branch detail");
+            return sb.ToString();
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
