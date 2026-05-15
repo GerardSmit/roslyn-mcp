@@ -31,7 +31,7 @@ public class SourceGeneratedFilesToolTests
         Assert.Contains("No source-generated files", result);
     }
 
-    [Fact]
+    [RequiresRazorSourceGeneratorFact]
     public async Task ListSourceGeneratedFiles_WhenBlazorProject_ThenListsRazorGeneratedFiles()
     {
         var result = await SourceGeneratedFilesTool.ListSourceGeneratedFiles(
@@ -41,7 +41,7 @@ public class SourceGeneratedFilesToolTests
         Assert.Contains("hintName", result);
     }
 
-    [Fact]
+    [RequiresRazorSourceGeneratorFact]
     public async Task ListSourceGeneratedFiles_WhenSourceFileProvided_ThenResolvesProject()
     {
         var result = await SourceGeneratedFilesTool.ListSourceGeneratedFiles(
@@ -73,7 +73,7 @@ public class SourceGeneratedFilesToolTests
         Assert.Contains("No source-generated file matching", result);
     }
 
-    [Fact]
+    [RequiresRazorSourceGeneratorFact]
     public async Task GetSourceGeneratedFileContent_WhenValidHintName_ThenReturnsContent()
     {
         // First list to discover a valid hint name
@@ -100,7 +100,7 @@ public class SourceGeneratedFilesToolTests
         Assert.Contains("    1. ", result);
     }
 
-    [Fact]
+    [RequiresRazorSourceGeneratorFact]
     public async Task GetSourceGeneratedFileContent_WhenPartialHintName_ThenMatchesByContains()
     {
         var project = await RoslynTestHelpers.OpenProjectAsync(FixturePaths.BlazorProjectFile);

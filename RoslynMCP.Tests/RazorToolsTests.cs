@@ -12,7 +12,7 @@ public class RazorToolsTests
 {
     // ── GoToDefinition ──────────────────────────────────────────────
 
-    [Fact]
+    [RequiresRazorSourceGeneratorFact]
     public async Task GoToDefinition_RazorInlineExpression_ResolvesToCSharpMethod()
     {
         // @AppHelper.FormatTitle("Counter") — navigate to FormatTitle in AppHelper.cs
@@ -28,7 +28,7 @@ public class RazorToolsTests
         Assert.DoesNotContain("Error", result);
     }
 
-    [Fact]
+    [RequiresRazorSourceGeneratorFact]
     public async Task GoToDefinition_RazorCodeBlock_ResolvesToCSharpMethod()
     {
         // Inside @code block: AppHelper.DoubleValue(...) — navigate to DoubleValue
@@ -43,7 +43,7 @@ public class RazorToolsTests
         Assert.DoesNotContain("Error", result);
     }
 
-    [Fact]
+    [RequiresRazorSourceGeneratorFact]
     public async Task GoToDefinition_RazorField_ResolvesToFieldInCodeBlock()
     {
         // @currentCount — navigate to field definition in @code block
@@ -57,7 +57,7 @@ public class RazorToolsTests
         Assert.DoesNotContain("No symbol found", result);
     }
 
-    [Fact]
+    [RequiresRazorSourceGeneratorFact]
     public async Task GoToDefinition_WeatherRazor_ResolvesToAppHelper()
     {
         // Weather.razor also uses AppHelper.FormatTitle
@@ -73,7 +73,7 @@ public class RazorToolsTests
 
     // ── File Outline ────────────────────────────────────────────────
 
-    [Fact]
+    [RequiresRazorSourceGeneratorFact]
     public async Task FileOutline_CounterRazor_ShowsCodeBlockMembers()
     {
         var result = await GetFileOutlineTool.GetFileOutline(
@@ -88,7 +88,7 @@ public class RazorToolsTests
         Assert.Contains("GetCountMessage", result);
     }
 
-    [Fact]
+    [RequiresRazorSourceGeneratorFact]
     public async Task FileOutline_WeatherRazor_ShowsDirectivesAndCodeBlock()
     {
         var result = await GetFileOutlineTool.GetFileOutline(

@@ -29,6 +29,13 @@ internal static class WorkspaceService
     /// </summary>
     public static bool IsLegacyProjectSupported { get; private set; }
 
+    /// <summary>
+    /// Triggers the static initializer (MSBuildLocator registration). Call this from test
+    /// code that creates a bare <see cref="MSBuildWorkspace"/> instead of going through
+    /// <see cref="GetOrOpenProjectAsync"/>, so MSBuild is registered before workspace creation.
+    /// </summary>
+    public static void EnsureRegistered() { }
+
     private static Dictionary<string, string> CreateDefaultProperties() => new()
     {
         { "AlwaysUseNETSdkDefaults", "true" },
