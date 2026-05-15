@@ -46,6 +46,9 @@ public class BlazorProjectTests : IAsyncLifetime
                 sb.AppendLine($"  [{a.GetType().Name}] {a.Display} :: {a.FullPath}");
                 if (a is Microsoft.CodeAnalysis.Diagnostics.AnalyzerFileReference afr)
                 {
+                    var loadErrors = new List<string>();
+                    afr.AnalyzerLoadFailed += (sender, args) =>
+                        loadErrors.Add($"{args.ErrorCode}: {args.Message} (type={args.TypeName})");
                     try
                     {
                         var analyzers = afr.GetAnalyzers(Microsoft.CodeAnalysis.LanguageNames.CSharp);
@@ -53,11 +56,38 @@ public class BlazorProjectTests : IAsyncLifetime
                         sb.AppendLine($"      analyzers={analyzers.Length}, generators={gens.Length}");
                         foreach (var g in gens.Take(3))
                             sb.AppendLine($"        gen: {g.GetType().FullName}");
+                        if (a.Display?.Contains("Razor") == true)
+                        {
+                            try
+                            {
+                                var asm = System.Reflection.Assembly.LoadFrom(a.FullPath!);
+                                sb.AppendLine($"      asm name: {asm.GetName()}");
+                                var refs = asm.GetReferencedAssemblies();
+                                foreach (var r in refs.Where(r => r.Name?.Contains("CodeAnalysis") == true || r.Name?.Contains("Roslyn") == true))
+                                    sb.AppendLine($"      refs: {r.FullName}");
+                                var genTypes = asm.GetTypes().Where(t =>
+                                    t.GetCustomAttributes(false).Any(att => att.GetType().Name == "GeneratorAttribute")).ToList();
+                                sb.AppendLine($"      asm gen types: {genTypes.Count}");
+                                foreach (var t in genTypes.Take(5))
+                                    sb.AppendLine($"        {t.FullName}");
+                            }
+                            catch (Exception ex)
+                            {
+                                sb.AppendLine($"      assembly probe error: {ex.GetType().Name}: {ex.Message}");
+                                if (ex is System.Reflection.ReflectionTypeLoadException rtle)
+                                {
+                                    foreach (var le in rtle.LoaderExceptions.Where(le => le is not null).Take(5))
+                                        sb.AppendLine($"        loader-ex: {le!.GetType().Name}: {le.Message}");
+                                }
+                            }
+                        }
                     }
                     catch (Exception ex)
                     {
                         sb.AppendLine($"      load error: {ex.GetType().Name}: {ex.Message}");
                     }
+                    foreach (var le in loadErrors)
+                        sb.AppendLine($"      AnalyzerLoadFailed: {le}");
                 }
             }
             var genDocs = (await _project.GetSourceGeneratedDocumentsAsync()).ToList();
