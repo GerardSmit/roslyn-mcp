@@ -29,14 +29,6 @@ internal static class WorkspaceService
     /// </summary>
     public static bool IsLegacyProjectSupported { get; private set; }
 
-    /// <summary>
-    /// Triggers the static initializer (MSBuildLocator registration). Call this from test
-    /// code that creates a bare <see cref="MSBuildWorkspace"/> instead of going through
-    /// <see cref="GetOrOpenProjectAsync"/>, so the right SDK is registered before workspace
-    /// creation.
-    /// </summary>
-    public static void EnsureRegistered() { }
-
     private static Dictionary<string, string> CreateDefaultProperties() => new()
     {
         { "AlwaysUseNETSdkDefaults", "true" },
@@ -131,15 +123,7 @@ internal static class WorkspaceService
             if (!MSBuildLocator.CanRegister)
                 return;
 
-            // Pass WorkingDirectory so muxer-based SDK discovery on Linux honors
-            // global.json (otherwise we may pick a newer preinstalled SDK whose
-            // bundled Roslyn doesn't match our NuGet-restored Microsoft.CodeAnalysis).
-            var queryOptions = new VisualStudioInstanceQueryOptions
-            {
-                DiscoveryTypes = DiscoveryType.DotNetSdk | DiscoveryType.VisualStudioSetup | DiscoveryType.DeveloperConsole,
-                WorkingDirectory = Directory.GetCurrentDirectory(),
-            };
-            var instances = MSBuildLocator.QueryVisualStudioInstances(queryOptions).ToList();
+            var instances = MSBuildLocator.QueryVisualStudioInstances().ToList();
 
             // The parent process is .NET 10 and only ever loads SDK-style projects in-process
             // (legacy .NET Framework projects are loaded by the BuildHost-net472 subprocess,
