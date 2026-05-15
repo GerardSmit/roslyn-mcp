@@ -42,7 +42,24 @@ public class BlazorProjectTests : IAsyncLifetime
             sb.AppendLine($"Project: {_project!.FilePath}");
             sb.AppendLine($"AnalyzerReferences count: {_project.AnalyzerReferences.Count}");
             foreach (var a in _project.AnalyzerReferences)
+            {
                 sb.AppendLine($"  [{a.GetType().Name}] {a.Display} :: {a.FullPath}");
+                if (a is Microsoft.CodeAnalysis.AnalyzerFileReference afr)
+                {
+                    try
+                    {
+                        var analyzers = afr.GetAnalyzers(Microsoft.CodeAnalysis.LanguageNames.CSharp);
+                        var gens = afr.GetGenerators(Microsoft.CodeAnalysis.LanguageNames.CSharp);
+                        sb.AppendLine($"      analyzers={analyzers.Length}, generators={gens.Length}");
+                        foreach (var g in gens.Take(3))
+                            sb.AppendLine($"        gen: {g.GetType().FullName}");
+                    }
+                    catch (Exception ex)
+                    {
+                        sb.AppendLine($"      load error: {ex.GetType().Name}: {ex.Message}");
+                    }
+                }
+            }
             var genDocs = (await _project.GetSourceGeneratedDocumentsAsync()).ToList();
             sb.AppendLine($"Generated docs: {genDocs.Count}");
             foreach (var d in genDocs.Take(5))
