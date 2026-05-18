@@ -1,9 +1,11 @@
 using System.Diagnostics;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Microsoft.Build.Locator;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Diagnostics;
 using Microsoft.CodeAnalysis.MSBuild;
 using Microsoft.CodeAnalysis.Text;
 
@@ -22,6 +24,28 @@ internal static class WorkspaceService
     private static readonly Dictionary<string, Task<(Workspace, Project)>> s_inflight = new(StringComparer.OrdinalIgnoreCase);
     private static readonly SemaphoreSlim s_cacheLock = new(1, 1);
     private static readonly Timer s_evictionTimer;
+
+    /// <summary>
+    /// Reverse index: analyzer / source-generator source directory → set of cached
+    /// project paths whose workspace pinned an ALC for that directory. Used to evict
+    /// affected workspaces when <see cref="ShadowCopyManager"/> reports a rebuild.
+    /// </summary>
+    private static readonly Dictionary<string, HashSet<string>> s_dirToProjects =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Reflection handle for <c>Workspace.SetCurrentSolution(Solution)</c> (protected,
+    /// instance, returns Solution). Used to atomically swap a workspace's current
+    /// solution to the analyzer-ref-rebound copy WITHOUT going through
+    /// <see cref="Workspace.TryApplyChanges"/> — the latter would round-trip the new
+    /// analyzer references back to the .csproj file on disk.
+    /// </summary>
+    private static readonly MethodInfo? s_setCurrentSolutionMethod = typeof(Workspace)
+        .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+        .FirstOrDefault(m => m.Name == "SetCurrentSolution"
+            && m.ReturnType == typeof(Solution)
+            && m.GetParameters() is { Length: 1 } ps
+            && ps[0].ParameterType == typeof(Solution));
 
     /// <summary>
     /// Indicates whether legacy .NET Framework projects (non-SDK-style .csproj) are supported.
@@ -58,6 +82,7 @@ internal static class WorkspaceService
         TryRegisterVisualStudioMSBuild();
         RuntimeHelpers.RunClassConstructor(typeof(CSharpSyntaxTree).TypeHandle);
         s_evictionTimer = new Timer(EvictExpiredEntries, null, EvictionInterval, EvictionInterval);
+        ShadowCopyService.Instance.AnalyzerDirectoryChanged += OnAnalyzerDirectoryChanged;
     }
 
     /// <summary>
@@ -310,6 +335,8 @@ internal static class WorkspaceService
 
         Workspace workspace;
         Project openedProject;
+        ShadowCopyAnalyzerAssemblyLoader? shadowLoader = null;
+        HashSet<string>? shadowDirs = null;
 
         try
         {
@@ -344,6 +371,19 @@ internal static class WorkspaceService
                         openedProject = msbuildWorkspace.CurrentSolution.GetProject(openedProject.Id)!;
                     }
 
+                    // Rebind to shadow-copied analyzer / source-generator paths BEFORE any
+                    // call to GetCompilationAsync (the framework-reference probe below does
+                    // exactly that). Roslyn's default analyzer loader opens the original DLL
+                    // via PEReader on first compilation access, locking it on disk — once
+                    // that's happened, our rebind is too late.
+                    (solution, shadowLoader, shadowDirs) =
+                        RebindAnalyzerReferencesToShadowLoader(msbuildWorkspace.CurrentSolution);
+                    if (shadowLoader is not null)
+                    {
+                        SwapCurrentSolutionInPlace(msbuildWorkspace, solution);
+                        openedProject = msbuildWorkspace.CurrentSolution.GetProject(openedProject.Id)!;
+                    }
+
                     solution = await InjectMissingFrameworkReferencesAsync(msbuildWorkspace.CurrentSolution, cancellationToken);
                     if (solution != msbuildWorkspace.CurrentSolution)
                     {
@@ -355,6 +395,7 @@ internal static class WorkspaceService
                 }
                 catch
                 {
+                    shadowLoader?.Dispose();
                     msbuildWorkspace.Dispose();
                     throw;
                 }
@@ -397,13 +438,15 @@ internal static class WorkspaceService
 
             if (TryGetValidCachedEntryLocked(normalizedPath, out var cachedEntry))
             {
+                shadowLoader?.Dispose();
                 workspace.Dispose();
                 result = CreateProjectSnapshot(cachedEntry!, targetFilePath);
             }
             else
             {
-                var newEntry = new CachedWorkspaceEntry(workspace, openedProject.Id);
+                var newEntry = new CachedWorkspaceEntry(workspace, openedProject.Id, shadowLoader, shadowDirs);
                 s_cache[normalizedPath] = newEntry;
+                RegisterShadowDirsLocked(normalizedPath, shadowDirs);
                 Console.Error.WriteLine($"[WorkspaceService] Cached workspace for '{normalizedPath}'.");
 
                 result = CreateProjectSnapshot(newEntry, targetFilePath);
@@ -587,6 +630,7 @@ internal static class WorkspaceService
                 entry.Value.Dispose();
             }
             s_cache.Clear();
+            s_dirToProjects.Clear();
             Console.Error.WriteLine("[WorkspaceService] All cached workspaces evicted.");
         }
         finally
@@ -627,11 +671,91 @@ internal static class WorkspaceService
 
         Console.Error.WriteLine(
             $"[WorkspaceService] Project file changed, evicting cache for '{normalizedPath}'.");
-        s_cache.Remove(normalizedPath);
-        entry.Dispose();
-        AnalyzerService.EvictAnalyzersForProject(normalizedPath);
+        EvictEntryLocked(normalizedPath, entry);
         entry = null;
         return false;
+    }
+
+    private static void EvictEntryLocked(string normalizedPath, CachedWorkspaceEntry entry)
+    {
+        s_cache.Remove(normalizedPath);
+        UnregisterShadowDirsLocked(normalizedPath, entry.ShadowDirs);
+        entry.Dispose();
+        AnalyzerService.EvictAnalyzersForProject(normalizedPath);
+    }
+
+    private static void RegisterShadowDirsLocked(string normalizedPath, IReadOnlyCollection<string>? dirs)
+    {
+        if (dirs is null || dirs.Count == 0)
+            return;
+
+        foreach (var dir in dirs)
+        {
+            if (!s_dirToProjects.TryGetValue(dir, out var set))
+            {
+                set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                s_dirToProjects[dir] = set;
+            }
+            set.Add(normalizedPath);
+        }
+    }
+
+    private static void UnregisterShadowDirsLocked(string normalizedPath, IReadOnlyCollection<string>? dirs)
+    {
+        if (dirs is null || dirs.Count == 0)
+            return;
+
+        foreach (var dir in dirs)
+        {
+            if (s_dirToProjects.TryGetValue(dir, out var set))
+            {
+                set.Remove(normalizedPath);
+                if (set.Count == 0)
+                    s_dirToProjects.Remove(dir);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Fired by <see cref="ShadowCopyService"/> when a watched analyzer / source-generator
+    /// directory is rebuilt. Evicts every cached workspace that pinned an ALC for that
+    /// directory so the next <see cref="GetOrOpenProjectAsync"/> call re-binds with fresh
+    /// shadow copies and a fresh ALC, picking up the new generator binaries.
+    /// </summary>
+    private static void OnAnalyzerDirectoryChanged(string sourceDir)
+    {
+        // Wait synchronously on a thread-pool callback — eviction here is best-effort
+        // and shouldn't dead-lock the watcher thread for long.
+        if (!s_cacheLock.Wait(0))
+        {
+            // If the lock is busy, schedule a retry once it's free.
+            _ = Task.Run(async () =>
+            {
+                await s_cacheLock.WaitAsync();
+                try { EvictForDirLocked(sourceDir); }
+                finally { s_cacheLock.Release(); }
+            });
+            return;
+        }
+
+        try { EvictForDirLocked(sourceDir); }
+        finally { s_cacheLock.Release(); }
+    }
+
+    private static void EvictForDirLocked(string sourceDir)
+    {
+        if (!s_dirToProjects.TryGetValue(sourceDir, out var projects))
+            return;
+
+        foreach (var projectPath in projects.ToList())
+        {
+            if (s_cache.TryGetValue(projectPath, out var entry))
+            {
+                Console.Error.WriteLine(
+                    $"[WorkspaceService] Analyzer rebuild in '{sourceDir}', evicting workspace for '{projectPath}'.");
+                EvictEntryLocked(projectPath, entry);
+            }
+        }
     }
 
     private static bool IsProjectFileStale(string normalizedPath, CachedWorkspaceEntry entry)
@@ -669,9 +793,7 @@ internal static class WorkspaceService
             {
                 if (s_cache.TryGetValue(key, out var entry))
                 {
-                    s_cache.Remove(key);
-                    entry.Dispose();
-                    AnalyzerService.EvictAnalyzersForProject(key);
+                    EvictEntryLocked(key, entry);
                     Console.Error.WriteLine($"[WorkspaceService] Evicted idle workspace for '{key}'.");
                 }
             }
@@ -699,6 +821,95 @@ internal static class WorkspaceService
             }
         }
         return solution;
+    }
+
+    /// <summary>
+    /// Atomically replaces <paramref name="workspace"/>'s current solution with
+    /// <paramref name="newSolution"/> without persisting any project-file changes to disk.
+    /// Goes through the protected <c>Workspace.SetCurrentSolution(Solution)</c> overload
+    /// via reflection because <see cref="Workspace.TryApplyChanges"/> would round-trip
+    /// analyzer-reference edits back to the .csproj file, polluting the user's project
+    /// with shadow-copy temp paths.
+    /// </summary>
+    private static void SwapCurrentSolutionInPlace(Workspace workspace, Solution newSolution)
+    {
+        if (s_setCurrentSolutionMethod is null)
+        {
+            // Fallback to TryApplyChanges if reflection failed — accept the disk-write
+            // side effect rather than skipping the rebind entirely.
+            Console.Error.WriteLine(
+                "[WorkspaceService] Reflection failed: Workspace.SetCurrentSolution not found; falling back to TryApplyChanges.");
+            workspace.TryApplyChanges(newSolution);
+            return;
+        }
+
+        s_setCurrentSolutionMethod.Invoke(workspace, [newSolution]);
+    }
+
+    /// <summary>
+    /// Replaces every <see cref="AnalyzerFileReference"/> pointing at a non-NuGet path
+    /// (typically a project-output source generator under <c>bin/</c>) with a new
+    /// reference whose <c>FullPath</c> points at a shadow copy and whose loader is a
+    /// per-workspace <see cref="ShadowCopyAnalyzerAssemblyLoader"/>.
+    /// <para>
+    /// Both the <c>FullPath</c> and the loader target the shadow copy: Roslyn's
+    /// <c>AnalyzerFileReference.GetMetadata()</c> opens <c>FullPath</c> directly with a
+    /// <see cref="System.Reflection.PortableExecutable.PEReader"/>, bypassing
+    /// <see cref="IAnalyzerAssemblyLoader"/>, so leaving the original path here would
+    /// still lock the source-generator DLL on disk and break <c>dotnet build</c>.
+    /// </para>
+    /// <para>
+    /// Returns the rewritten solution, the shared loader (or <c>null</c> when nothing
+    /// needed shadowing), and the set of <b>original</b> source directories the loader
+    /// will pin (used by the rebuild-eviction watcher).
+    /// </para>
+    /// </summary>
+    private static (Solution Solution, ShadowCopyAnalyzerAssemblyLoader? Loader, HashSet<string>? Dirs)
+        RebindAnalyzerReferencesToShadowLoader(Solution solution)
+    {
+        var shadowCopy = ShadowCopyService.Instance;
+        ShadowCopyAnalyzerAssemblyLoader? loader = null;
+        HashSet<string>? dirs = null;
+
+        foreach (var project in solution.Projects.ToList())
+        {
+            var oldRefs = project.AnalyzerReferences;
+            if (oldRefs.Count == 0)
+                continue;
+
+            List<AnalyzerReference>? newRefs = null;
+            for (int i = 0; i < oldRefs.Count; i++)
+            {
+                var r = oldRefs[i];
+                if (r is AnalyzerFileReference fileRef
+                    && !string.IsNullOrEmpty(fileRef.FullPath)
+                    && shadowCopy.NeedsShadowCopy(fileRef.FullPath))
+                {
+                    loader ??= new ShadowCopyAnalyzerAssemblyLoader();
+                    dirs ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    dirs.Add(Path.GetDirectoryName(Path.GetFullPath(fileRef.FullPath))!);
+
+                    string shadowPath = loader.Register(fileRef.FullPath);
+
+                    if (newRefs is null)
+                    {
+                        newRefs = new List<AnalyzerReference>(oldRefs.Count);
+                        for (int j = 0; j < i; j++)
+                            newRefs.Add(oldRefs[j]);
+                    }
+                    newRefs.Add(new AnalyzerFileReference(shadowPath, loader));
+                }
+                else if (newRefs is not null)
+                {
+                    newRefs.Add(r);
+                }
+            }
+
+            if (newRefs is not null)
+                solution = solution.WithProjectAnalyzerReferences(project.Id, newRefs);
+        }
+
+        return (solution, loader, dirs);
     }
 
     /// <summary>
@@ -940,19 +1151,31 @@ internal static class WorkspaceService
         public ProjectId ProjectId { get; }
         public DateTime CachedAtUtc { get; }
         public DateTime LastAccessedUtc { get; set; }
+        public ShadowCopyAnalyzerAssemblyLoader? ShadowLoader { get; }
+        public IReadOnlyCollection<string>? ShadowDirs { get; }
 
-        public CachedWorkspaceEntry(Workspace workspace, ProjectId projectId)
+        public CachedWorkspaceEntry(
+            Workspace workspace,
+            ProjectId projectId,
+            ShadowCopyAnalyzerAssemblyLoader? shadowLoader,
+            IReadOnlyCollection<string>? shadowDirs)
         {
             Workspace = workspace;
             ProjectId = projectId;
             CachedAtUtc = DateTime.UtcNow;
             LastAccessedUtc = DateTime.UtcNow;
+            ShadowLoader = shadowLoader;
+            ShadowDirs = shadowDirs;
         }
 
         public Project GetProject() =>
             Workspace.CurrentSolution.GetProject(ProjectId)
             ?? throw new InvalidOperationException($"Cached project {ProjectId} no longer found in workspace.");
 
-        public void Dispose() => Workspace.Dispose();
+        public void Dispose()
+        {
+            Workspace.Dispose();
+            ShadowLoader?.Dispose();
+        }
     }
 }

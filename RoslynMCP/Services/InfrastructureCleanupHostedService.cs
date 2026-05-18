@@ -11,5 +11,6 @@ internal sealed class InfrastructureCleanupHostedService : IHostedService
         await WorkspaceService.EvictAllAsync(cancellationToken);
         AnalyzerService.DisposeHost();
         ProjectIndexCacheService.DisposeAll();
+        ShadowCopyService.DisposeIfCreated();
     }
 }

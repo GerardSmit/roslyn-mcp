@@ -46,7 +46,7 @@ internal sealed class AnalyzerHost : IDisposable
 
     public AnalyzerHost()
     {
-        _shadowCopy = new ShadowCopyManager();
+        _shadowCopy = ShadowCopyService.Instance;
         _shadowCopy.AnalyzerDirectoryChanged += OnAnalyzerDirectoryChanged;
         _evictionTimer = new Timer(EvictExpiredEntries, null, EvictionInterval, EvictionInterval);
     }
@@ -147,7 +147,7 @@ internal sealed class AnalyzerHost : IDisposable
         _evictionTimer.Dispose();
         _shadowCopy.AnalyzerDirectoryChanged -= OnAnalyzerDirectoryChanged;
         UnloadAll();
-        _shadowCopy.Dispose();
+        // _shadowCopy is process-wide singleton; disposed by InfrastructureCleanupHostedService.
     }
 
     private AnalyzerCacheEntry LoadIsolated(IReadOnlyList<string> analyzerPaths)

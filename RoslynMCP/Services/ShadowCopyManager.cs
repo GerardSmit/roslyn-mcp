@@ -33,6 +33,7 @@ internal sealed class ShadowCopyManager : IDisposable
     private readonly Dictionary<string, Timer> _debounceTimers = new(StringComparer.OrdinalIgnoreCase);
 
     private readonly string _nugetPackagesDir;
+    private int _generationCounter;
     private bool _disposed;
 
     /// <summary>
@@ -58,11 +59,16 @@ internal sealed class ShadowCopyManager : IDisposable
 
     /// <summary>
     /// Returns <c>true</c> when the analyzer at <paramref name="path"/> should be
-    /// shadow-copied (i.e.&nbsp;it is <b>not</b> inside the NuGet global packages folder).
+    /// shadow-copied. Skipped for the NuGet global packages folder (immutable) and for
+    /// paths already inside our own shadow root (avoids double-shadowing on re-loads).
     /// </summary>
     public bool NeedsShadowCopy(string path)
     {
-        return !path.StartsWith(_nugetPackagesDir, StringComparison.OrdinalIgnoreCase);
+        if (path.StartsWith(_nugetPackagesDir, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (path.StartsWith(BaseDir, StringComparison.OrdinalIgnoreCase))
+            return false;
+        return true;
     }
 
     /// <summary>
@@ -108,7 +114,14 @@ internal sealed class ShadowCopyManager : IDisposable
         if (_shadowDirectories.TryGetValue(sourceDir, out var existing) && Directory.Exists(existing))
             return existing;
 
-        string shadowDir = Path.Combine(_instanceDir, ComputeDirectoryHash(sourceDir));
+        // Use a unique generation suffix every time we shadow-copy a directory.
+        // After a rebuild, the old shadow directory may still hold a locked DLL
+        // (the previous collectible ALC's Unload() is asynchronous — file handles
+        // release only after a future GC), so reusing the same shadow path would
+        // fail with "file in use" when File.Copy tries to overwrite. Each generation
+        // gets its own subdirectory; stale ones are cleaned up at process exit.
+        int gen = Interlocked.Increment(ref _generationCounter);
+        string shadowDir = Path.Combine(_instanceDir, $"{ComputeDirectoryHash(sourceDir)}_{gen:x}");
         Directory.CreateDirectory(shadowDir);
 
         // Copy all DLLs, PDBs, and JSON metadata (e.g. .deps.json, .runtimeconfig.json)

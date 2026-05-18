@@ -55,6 +55,12 @@ internal static class FixturePaths
     public static string DebugCalculatorFile => Path.Combine(DebugTestProjectDir, "Calculator.cs");
     public static string DebugCalculatorTestsFile => Path.Combine(DebugTestProjectDir, "CalculatorTests.cs");
 
+    public static string SourceGenFixtureDir => Path.Combine(s_fixturesRoot, "SourceGenFixture");
+    public static string SourceGenGeneratorProjectFile => Path.Combine(SourceGenFixtureDir, "Generator", "Generator.csproj");
+    public static string SourceGenGeneratorSourceFile => Path.Combine(SourceGenFixtureDir, "Generator", "HelloGenerator.cs");
+    public static string SourceGenGeneratorDll => Path.Combine(SourceGenFixtureDir, "Generator", "bin", "Debug", "netstandard2.0", "Generator.dll");
+    public static string SourceGenConsumerProjectFile => Path.Combine(SourceGenFixtureDir, "Consumer", "Consumer.csproj");
+
     /// <summary>
     /// Walks up from the test assembly location to find the Fixtures directory.
     /// Prefer the source-tree fixtures so Roslyn can open the nested sample project
