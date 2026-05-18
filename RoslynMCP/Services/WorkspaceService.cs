@@ -944,7 +944,7 @@ internal static class WorkspaceService
             }
         };
 
-        process.StartInfo.Environment["MSBUILDTERMINALLOGGER"] = "off";
+        BuildProcessHelper.ConfigureMsBuildEnvironment(process.StartInfo);
 
         try
         {
@@ -969,8 +969,7 @@ internal static class WorkspaceService
         }
         catch (OperationCanceledException)
         {
-            // Kill the process tree to prevent orphaned dotnet restore processes
-            try { process.Kill(entireProcessTree: true); } catch { }
+            await BuildProcessHelper.KillAndDrainAsync(process);
             throw;
         }
         catch (Exception ex)

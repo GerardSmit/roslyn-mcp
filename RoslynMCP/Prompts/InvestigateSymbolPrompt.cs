@@ -33,7 +33,7 @@ public static class InvestigateSymbolPrompt
 
             1. **Find the symbol** — Call `SemanticSymbolSearch` with `filePath={{filePath}}` and `query={{symbolName}}` to locate declarations matching this name.
 
-            2. **Go to definition** — For each match found (especially if there is a primary/most relevant one), call `GoToDefinition` with an appropriate markup snippet to see its source code and context.
+            2. **Go to definition** — For each match found (especially if there is a primary/most relevant one), call `GoToDefinition` with the fully-qualified symbol name, or `GoToDefinitionSnippet` with an appropriate markup snippet to see its source code and context.
 
             3. **Find usages** — Call `FindUsages` with a markup snippet targeting the symbol to discover all references across the project.
 

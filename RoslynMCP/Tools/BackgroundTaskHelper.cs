@@ -31,7 +31,7 @@ internal static class BackgroundTaskHelper
 
     /// <summary>Starts a build in the background and returns a task ID.</summary>
     internal static string StartBuildBackground(
-        string resolvedPath, string configuration,
+        string resolvedPath, string configuration, int timeoutSeconds,
         BackgroundTaskStore taskStore, BuildWarningsStore warningsStore)
     {
         string fileName;
@@ -45,7 +45,8 @@ internal static class BackgroundTaskHelper
                 return "Error: This project requires MSBuild (legacy .NET Framework project) but " +
                        "MSBuild could not be found. Install Visual Studio or Build Tools for Visual Studio.";
             fileName = msbuild;
-            args = $"\"{resolvedPath}\" /p:Configuration={configuration} /nologo /v:minimal";
+            args = $"\"{resolvedPath}\" /p:Configuration={configuration} /nologo /v:minimal " +
+                   BuildProcessHelper.NoNodeReuseArg;
             description = $"msbuild {Path.GetFileName(resolvedPath)}";
         }
         else
@@ -59,7 +60,7 @@ internal static class BackgroundTaskHelper
 
         var taskId = taskStore.CreateTask(BackgroundTaskStore.TaskKind.Build, description);
         _ = RunBuildInBackgroundAsync(taskId, fileName, args,
-            Path.GetDirectoryName(resolvedPath)!, 300, resolvedPath, taskStore, warningsStore);
+            Path.GetDirectoryName(resolvedPath)!, timeoutSeconds, resolvedPath, taskStore, warningsStore);
 
         return $"Build started in background.\n**Task ID:** `{taskId}`\n\n" +
                $"You can continue working on other tasks. " +
@@ -145,7 +146,7 @@ internal static class BackgroundTaskHelper
 
             if (build)
             {
-                var buildArgs = $"\"{csprojPath}\" /nologo /v:minimal";
+                var buildArgs = $"\"{csprojPath}\" /nologo /v:minimal " + BuildProcessHelper.NoNodeReuseArg;
                 var (buildExitCode, buildOutput, buildErrors) = await RunProcessAsync(
                     msbuild, buildArgs, workingDirectory, Math.Max(60, timeoutSeconds / 2));
 
@@ -257,7 +258,11 @@ internal static class BackgroundTaskHelper
             }
         };
 
-        process.StartInfo.Environment["MSBUILDTERMINALLOGGER"] = "off";
+        BuildProcessHelper.ConfigureMsBuildEnvironment(process.StartInfo);
+
+        // When using VS MSBuild, set VSINSTALLDIR so $(VSToolsPath) resolves correctly
+        if (fileName != "dotnet")
+            MsBuildLocator.SetVsEnvironment(process.StartInfo, fileName);
 
         var stdout = new StringBuilder();
         var stderr = new StringBuilder();
@@ -282,7 +287,7 @@ internal static class BackgroundTaskHelper
         }
         catch (OperationCanceledException)
         {
-            try { process.Kill(entireProcessTree: true); } catch { }
+            await BuildProcessHelper.KillAndDrainAsync(process);
             throw;
         }
 

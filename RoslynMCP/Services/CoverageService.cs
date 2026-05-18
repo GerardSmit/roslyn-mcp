@@ -76,8 +76,7 @@ public static class CoverageService
                 }
             };
 
-            // Disable terminal logger to get clean parseable output
-            process.StartInfo.Environment["MSBUILDTERMINALLOGGER"] = "off";
+            BuildProcessHelper.ConfigureMsBuildEnvironment(process.StartInfo);
 
             var stdout = new StringBuilder();
             var stderr = new StringBuilder();
@@ -105,7 +104,7 @@ public static class CoverageService
             }
             catch (OperationCanceledException)
             {
-                try { process.Kill(entireProcessTree: true); } catch { }
+                await BuildProcessHelper.KillAndDrainAsync(process);
                 if (timeoutSeconds > 0 && !cancellationToken.IsCancellationRequested)
                     return new CoverageResult(false, $"Coverage collection timed out after {timeoutSeconds} seconds.", null);
                 return new CoverageResult(false, "Coverage collection was cancelled.", null);
@@ -173,7 +172,7 @@ public static class CoverageService
                 : "Coverage collection was cancelled.";
 
         // Build the project
-        var buildArgs = $"\"{csprojPath}\" /nologo /v:minimal";
+        var buildArgs = $"\"{csprojPath}\" /nologo /v:minimal " + BuildProcessHelper.NoNodeReuseArg;
         using (var buildProcess = new Process
         {
             StartInfo = new ProcessStartInfo
@@ -188,6 +187,8 @@ public static class CoverageService
             }
         })
         {
+            BuildProcessHelper.ConfigureMsBuildEnvironment(buildProcess.StartInfo);
+            MsBuildLocator.SetVsEnvironment(buildProcess.StartInfo, msbuild);
             var buildOut = new StringBuilder();
             var buildErr = new StringBuilder();
             buildProcess.OutputDataReceived += (_, e) => { if (e.Data is not null) buildOut.AppendLine(e.Data); };
@@ -198,7 +199,7 @@ public static class CoverageService
             try { await buildProcess.WaitForExitAsync(linkedToken); }
             catch (OperationCanceledException)
             {
-                try { buildProcess.Kill(entireProcessTree: true); } catch { }
+                await BuildProcessHelper.KillAndDrainAsync(buildProcess);
                 return new CoverageResult(false, TimeoutOrCancelled(), null);
             }
             if (buildProcess.ExitCode != 0)
@@ -246,6 +247,7 @@ public static class CoverageService
                 }
             };
 
+            BuildProcessHelper.ConfigureMsBuildEnvironment(process.StartInfo);
             var stdout = new StringBuilder();
             var stderr = new StringBuilder();
             process.OutputDataReceived += (_, e) => { if (e.Data is not null) stdout.AppendLine(e.Data); };
@@ -256,7 +258,7 @@ public static class CoverageService
             try { await process.WaitForExitAsync(linkedToken); }
             catch (OperationCanceledException)
             {
-                try { process.Kill(entireProcessTree: true); } catch { }
+                await BuildProcessHelper.KillAndDrainAsync(process);
                 return new CoverageResult(false, TimeoutOrCancelled(), null);
             }
 

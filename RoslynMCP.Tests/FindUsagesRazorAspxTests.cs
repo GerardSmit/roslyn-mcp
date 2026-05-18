@@ -130,7 +130,7 @@ public class FindUsagesRazorAspxTests
     public async Task WhenGoToDefinitionOnTopLevelControlIdThenReturnsField()
     {
         // Clicking ID="btnSubmit" in the ASPX should navigate to the code-behind field
-        var result = await GoToDefinitionTool.GoToDefinition(
+        var result = await GoToDefinitionSnippetTool.GoToDefinitionSnippet(
             filePath: FixturePaths.DefaultAspxFile,
             markupSnippet: "ID=\"[|btnSubmit|]\"",
             fmt: new MarkdownFormatter(),

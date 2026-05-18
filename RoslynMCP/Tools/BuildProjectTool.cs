@@ -22,8 +22,9 @@ public static class BuildProjectTool
         [Description("Set to true to build in the background. Returns a task ID immediately " +
                      "so you can continue working. Use GetBackgroundTaskResult to check results later.")]
         bool background = false,
-        [Description("Timeout in seconds before the build is forcibly killed. Default: 180.")]
-        int timeoutSeconds = 180,
+        [Description("Timeout in seconds before the build is forcibly killed. Default: 600. " +
+                     "Legacy .NET Framework / WebForms projects with large dependency graphs can take several minutes for a cold first build.")]
+        int timeoutSeconds = 600,
         CancellationToken cancellationToken = default)
     {
         try
@@ -34,18 +35,26 @@ public static class BuildProjectTool
 
             if (background)
                 return BackgroundTaskHelper.StartBuildBackground(
-                    resolved, configuration, taskStore, warningsStore);
+                    resolved, configuration, timeoutSeconds, taskStore, warningsStore);
 
             string fileName;
             string arguments;
 
-            if (PathHelper.RequiresMsBuild(resolved))
+            bool useMsBuild = PathHelper.RequiresMsBuild(resolved);
+            string? projectSdk = resolved.EndsWith(".csproj", StringComparison.OrdinalIgnoreCase)
+                ? PathHelper.ReadProjectSdk(resolved)
+                : null;
+            Console.Error.WriteLine(
+                $"[BuildProject] Target='{resolved}', SDK='{projectSdk ?? "(none)"}', UseMsBuild={useMsBuild}");
+
+            if (useMsBuild)
             {
                 var msbuild = MsBuildLocator.FindMsBuild();
                 if (msbuild is null)
                     return "Error: This project requires MSBuild (legacy .NET Framework project) but " +
                            "MSBuild could not be found. Install Visual Studio or Build Tools for Visual Studio.";
 
+                Console.Error.WriteLine($"[BuildProject] MSBuild='{msbuild}'");
                 fileName = msbuild;
                 arguments = BuildMsBuildArgs(resolved, SanitizeConfiguration(configuration));
             }
@@ -69,8 +78,11 @@ public static class BuildProjectTool
                 }
             };
 
-            // Disable terminal logger to get clean parseable output
-            process.StartInfo.Environment["MSBUILDTERMINALLOGGER"] = "off";
+            BuildProcessHelper.ConfigureMsBuildEnvironment(process.StartInfo);
+
+            // When using VS MSBuild, set VSINSTALLDIR so $(VSToolsPath) resolves correctly
+            if (fileName != "dotnet")
+                MsBuildLocator.SetVsEnvironment(process.StartInfo, fileName);
 
             var stdout = new StringBuilder();
             var stderr = new StringBuilder();
@@ -98,7 +110,7 @@ public static class BuildProjectTool
             }
             catch (OperationCanceledException)
             {
-                try { process.Kill(entireProcessTree: true); } catch { }
+                await BuildProcessHelper.KillAndDrainAsync(process);
 
                 if (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
                     return $"Build timed out after {timeoutSeconds} seconds and was forcibly terminated.";
@@ -106,7 +118,8 @@ public static class BuildProjectTool
                 return "Build was cancelled.";
             }
 
-            return FormatBuildOutput(stdout.ToString(), stderr.ToString(), process.ExitCode, resolved, warningsStore);
+            string command = fileName == "dotnet" ? $"dotnet {arguments}" : $"{fileName} {arguments}";
+            return FormatBuildOutput(stdout.ToString(), stderr.ToString(), process.ExitCode, resolved, warningsStore, command);
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
@@ -144,7 +157,7 @@ public static class BuildProjectTool
 
     internal static string FormatBuildOutput(
         string stdout, string stderr, int exitCode, string target,
-        BuildWarningsStore warningsStore)
+        BuildWarningsStore warningsStore, string? command = null)
     {
         var sb = new StringBuilder();
 
@@ -155,6 +168,8 @@ public static class BuildProjectTool
 
         sb.AppendLine();
         sb.AppendLine($"**Target**: {Path.GetFileName(target)}");
+        if (exitCode != 0 && command is not null)
+            sb.AppendLine($"**Command**: `{command}`");
         sb.AppendLine();
 
         var errors = new List<string>();
@@ -328,7 +343,8 @@ public static class BuildProjectTool
         $"build \"{resolved}\" --configuration \"{configuration}\" --nologo";
 
     private static string BuildMsBuildArgs(string resolved, string configuration) =>
-        $"\"{resolved}\" /p:Configuration=\"{configuration}\" /nologo /v:minimal";
+        $"\"{resolved}\" /p:Configuration=\"{configuration}\" /nologo /v:minimal " +
+        BuildProcessHelper.NoNodeReuseArg;
 
     /// <summary>
     /// Strips any characters that aren't alphanumeric, dash, underscore, or dot

@@ -180,6 +180,42 @@ internal static class MsBuildLocator
     }
 
     /// <summary>
+    /// Derives the Visual Studio installation directory from an MSBuild.exe path.
+    /// MSBuild lives at <c>{VSINSTALLDIR}\MSBuild\Current\Bin\MSBuild.exe</c> (or <c>...\Bin\amd64\MSBuild.exe</c>).
+    /// Returns null if the pattern doesn't match.
+    /// </summary>
+    public static string? GetVsInstallDir(string msbuildPath)
+    {
+        var dir = Path.GetDirectoryName(msbuildPath);
+        while (dir is not null)
+        {
+            var dirName = Path.GetFileName(dir);
+            if (string.Equals(dirName, "MSBuild", StringComparison.OrdinalIgnoreCase))
+                return Path.GetDirectoryName(dir);
+            dir = Path.GetDirectoryName(dir);
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Sets VS environment variables on a <see cref="ProcessStartInfo"/> so that
+    /// MSBuild can resolve <c>$(VSToolsPath)</c> and related properties correctly
+    /// when invoked outside of a VS Developer Command Prompt.
+    /// </summary>
+    public static void SetVsEnvironment(ProcessStartInfo startInfo, string msbuildPath)
+    {
+        var vsInstallDir = GetVsInstallDir(msbuildPath);
+        if (vsInstallDir is null) return;
+
+        // Ensure trailing separator — MSBuild expects VSINSTALLDIR to end with '\'
+        if (!vsInstallDir.EndsWith(Path.DirectorySeparatorChar))
+            vsInstallDir += Path.DirectorySeparatorChar;
+
+        startInfo.Environment["VSINSTALLDIR"] = vsInstallDir;
+    }
+
+    /// <summary>
     /// Returns the full output path of the built assembly for a legacy project,
     /// using MSBuild's <c>/getProperty:TargetPath</c>. Returns null if MSBuild
     /// is not found or the property cannot be evaluated.
@@ -196,7 +232,7 @@ internal static class MsBuildLocator
                 StartInfo = new ProcessStartInfo
                 {
                     FileName = msbuild,
-                    Arguments = $"\"{csprojPath}\" /nologo /v:minimal /getProperty:TargetPath",
+                    Arguments = $"\"{csprojPath}\" /nologo /v:minimal /nodeReuse:false /getProperty:TargetPath",
                     UseShellExecute = false,
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -205,6 +241,7 @@ internal static class MsBuildLocator
                 }
             };
 
+            SetVsEnvironment(process.StartInfo, msbuild);
             process.Start();
             var output = process.StandardOutput.ReadToEnd().Trim();
             process.WaitForExit();

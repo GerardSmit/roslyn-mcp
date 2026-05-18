@@ -133,6 +133,6 @@ internal class RazorGoToDefinition(IOutputFormatter fmt) : IGoToDefinitionHandle
         if (symbol is null)
             return $"No symbol found for '{markup.MarkedText}' in Razor file.";
 
-        return await GoToDefinitionTool.FormatDefinitionAsync(symbol, project, contextLines, fmt, cancellationToken);
+        return await GoToDefinitionSnippetTool.FormatDefinitionAsync(symbol, project, contextLines, fmt, cancellationToken);
     }
 }

@@ -16,7 +16,7 @@ public class RazorToolsTests
     public async Task GoToDefinition_RazorInlineExpression_ResolvesToCSharpMethod()
     {
         // @AppHelper.FormatTitle("Counter") — navigate to FormatTitle in AppHelper.cs
-        var result = await GoToDefinitionTool.GoToDefinition(
+        var result = await GoToDefinitionSnippetTool.GoToDefinitionSnippet(
             filePath: FixturePaths.CounterRazorFile,
             markupSnippet: "@AppHelper.[|FormatTitle|](\"Counter\")",
             fmt: new MarkdownFormatter(),
@@ -32,7 +32,7 @@ public class RazorToolsTests
     public async Task GoToDefinition_RazorCodeBlock_ResolvesToCSharpMethod()
     {
         // Inside @code block: AppHelper.DoubleValue(...) — navigate to DoubleValue
-        var result = await GoToDefinitionTool.GoToDefinition(
+        var result = await GoToDefinitionSnippetTool.GoToDefinitionSnippet(
             filePath: FixturePaths.CounterRazorFile,
             markupSnippet: "currentCount = AppHelper.[|DoubleValue|](currentCount + 1)",
             fmt: new MarkdownFormatter(),
@@ -47,7 +47,7 @@ public class RazorToolsTests
     public async Task GoToDefinition_RazorField_ResolvesToFieldInCodeBlock()
     {
         // @currentCount — navigate to field definition in @code block
-        var result = await GoToDefinitionTool.GoToDefinition(
+        var result = await GoToDefinitionSnippetTool.GoToDefinitionSnippet(
             filePath: FixturePaths.CounterRazorFile,
             markupSnippet: "Current count: @[|currentCount|]",
             fmt: new MarkdownFormatter(),
@@ -61,7 +61,7 @@ public class RazorToolsTests
     public async Task GoToDefinition_WeatherRazor_ResolvesToAppHelper()
     {
         // Weather.razor also uses AppHelper.FormatTitle
-        var result = await GoToDefinitionTool.GoToDefinition(
+        var result = await GoToDefinitionSnippetTool.GoToDefinitionSnippet(
             filePath: FixturePaths.WeatherRazorFile,
             markupSnippet: "@AppHelper.[|FormatTitle|](\"Weather\")",
             fmt: new MarkdownFormatter(),
